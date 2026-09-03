@@ -1,0 +1,196 @@
+# real-guard-v1 default policy
+#
+# Starts from the SPEC.md §7.1 example and completes it per
+# docs/adr/0001-policy-completion-for-corpus-coverage.md: the §7.1 excerpt left
+# JAILBREAK, INDIRECT_INJECTION, ENCODED_PAYLOAD and inbound SECRET_DETECTED
+# without a matching rule, and one rule (deny_system_prompt_canary) tried to
+# emit two different reason codes from one rule, which POL-019 forbids. Every
+# rule below that is unchanged from §7.1 is marked; every rule added or split
+# is marked and points at the ADR section explaining why.
+#
+# This is deliberately balanced for local evaluation, not production — see
+# policies/standard_security.yaml (WS-02) for stricter defaults.
+#
+# Every rule declares: an explicit `plane` (POL-017), a `verdict` from the
+# closed set, and a `reason_code` from the closed taxonomy (POL-019). Rule
+# order does not affect the outcome (POL-016) — only §5.1 precedence does.
+
+schema_version: "1.0"
+metadata:
+  name: default
+  description: Balanced defaults for local evaluation
+
+defaults:
+  detector_failure_mode: fail_open   # fail_closed in production
+  unknown_tool: deny
+  max_request_bytes: 262144
+
+detectors:
+  prompt_injection: {enabled: true, timeout_ms: 250}
+  pii:              {enabled: true, timeout_ms: 250, types: [email, phone, ssn, credit_card, iban, passport]}
+  secrets:          {enabled: true, timeout_ms: 250}
+  topics:           {enabled: true, timeout_ms: 100}
+  system_prompt_leak: {enabled: true, timeout_ms: 100, canaries: ["RG-CANARY-7F3A9C"]}
+  tool_calls:       {enabled: true, timeout_ms: 100}
+
+rules:
+  # --- unchanged from SPEC.md §7.1 ---
+  - id: deny_prompt_injection
+    plane: [input, context]
+    when: {category: PROMPT_INJECTION, score_gte: 0.85}
+    verdict: DENY
+    hard_deny: true
+    reason_code: PROMPT_INJECTION
+
+  # ADR 0001 §1: prompt_injection detector also emits JAILBREAK (SPEC §6.4);
+  # a separate rule is required because a rule has exactly one static
+  # reason_code (POL-019).
+  - id: deny_jailbreak
+    plane: [input, context]
+    when: {category: JAILBREAK, score_gte: 0.85}
+    verdict: DENY
+    hard_deny: true
+    reason_code: JAILBREAK
+
+  # --- unchanged from SPEC.md §7.1 ---
+  - id: review_probable_injection
+    plane: [input, context]
+    when: {category: PROMPT_INJECTION, score_gte: 0.50, score_lt: 0.85}
+    verdict: NEED_APPROVAL
+    reason_code: PROMPT_INJECTION
+
+  # ADR 0001 §1: mirrors review_probable_injection for JAILBREAK, for symmetry.
+  - id: review_probable_jailbreak
+    plane: [input, context]
+    when: {category: JAILBREAK, score_gte: 0.50, score_lt: 0.85}
+    verdict: NEED_APPROVAL
+    reason_code: JAILBREAK
+
+  # ADR 0001 §2: SPEC §6.4's indirect_injection detector (Context plane only)
+  # emits INDIRECT_INJECTION; §7.1 had no rule for it. Threshold is lower than
+  # direct injection — context content should never carry instructions at all
+  # (SYS-004, TB2: retrieved content is fully untrusted).
+  - id: deny_indirect_injection
+    plane: [context]
+    when: {category: INDIRECT_INJECTION, score_gte: 0.50}
+    verdict: DENY
+    hard_deny: true
+    reason_code: INDIRECT_INJECTION
+
+  # ADR 0001 §5: DET-008 requires a decoded-only finding to additionally raise
+  # ENCODED_PAYLOAD; §7.1 had no rule consuming that category.
+  - id: deny_encoded_payload
+    plane: [input, context]
+    when: {category: ENCODED_PAYLOAD}
+    verdict: DENY
+    hard_deny: true
+    reason_code: ENCODED_PAYLOAD
+
+  # --- unchanged from SPEC.md §7.1 ---
+  - id: redact_pii_inbound
+    plane: [input, context]
+    when: {category: PII_DETECTED}
+    verdict: ALLOW
+    transformation: REDACT
+    reason_code: PII_DETECTED
+
+  # ADR 0001 §3: SECRET_DETECTED (§5.7: "any" plane) had no inbound rule —
+  # only the response-plane deny_output_secret_leak existed. Mirrors
+  # redact_pii_inbound.
+  - id: redact_secrets_inbound
+    plane: [input, context]
+    when: {category: SECRET_DETECTED}
+    verdict: ALLOW
+    transformation: REDACT
+    reason_code: SECRET_DETECTED
+
+  # --- unchanged from SPEC.md §7.1 ---
+  - id: approve_external_pii_transfer
+    plane: [input]
+    when:
+      all:
+        - {category: PII_DETECTED}
+        - {tool_name_in: [send_email, post_webhook, upload_file]}
+    verdict: NEED_APPROVAL
+    mandatory_approval: true
+    transformation: REDACT
+    reason_code: SENSITIVE_ACTION
+
+  - id: high_value_transfer
+    plane: [action]
+    when:
+      all:
+        - {tool_name_in: [wire_transfer, create_payment, initiate_transfer]}
+        - {argument_path: "$.amount", numeric_gte: 1000}
+    verdict: NEED_APPROVAL
+    mandatory_approval: true
+    transformation: REDACT
+    reason_code: SENSITIVE_ACTION
+
+  - id: deny_destructive_sql
+    plane: [action]
+    when:
+      any:
+        - {argument_path: "$.query", sql_verb_in: [DROP, TRUNCATE, ALTER]}
+        - {argument_path: "$.query", sql_unbounded_mutation: true}
+    verdict: DENY
+    hard_deny: true
+    reason_code: DESTRUCTIVE_ACTION
+
+  - id: deny_shell_deletion
+    plane: [action]
+    when: {argument_path: "$.command", shell_pattern_in: [recursive_force_remove, device_write, fork_bomb]}
+    verdict: DENY
+    hard_deny: true
+    reason_code: DESTRUCTIVE_ACTION
+
+  - id: agent_tool_allowlist
+    plane: [action]
+    when: {tool_not_in: [search_docs, get_weather, lookup_order, wire_transfer, run_sql, send_email]}
+    verdict: DENY
+    reason_code: TOOL_NOT_ALLOWLISTED
+
+  - id: payload_limit
+    plane: [input]
+    when: {bytes_gt: 262144}
+    verdict: DENY
+    reason_code: PAYLOAD_TOO_LARGE
+
+  - id: rate_limit_default
+    plane: [input]
+    rate_limit: {requests: 60, window_seconds: 60, scope: identity}
+    verdict: DENY
+    reason_code: RATE_LIMITED
+
+  - id: deny_output_secret_leak
+    plane: [response]
+    when: {category: OUTPUT_SECRET}
+    verdict: DENY
+    hard_deny: true
+    reason_code: OUTPUT_SECRET
+
+  - id: redact_output_pii
+    plane: [response]
+    when: {category: OUTPUT_PII}
+    verdict: ALLOW
+    transformation: REDACT
+    reason_code: OUTPUT_PII
+
+  # ADR 0001 §4: replaces the single deny_system_prompt_canary rule from
+  # SPEC.md §7.1, which tried to emit two different reason codes (CANARY_LEAK
+  # vs SYSTEM_PROMPT_LEAK) from one rule — impossible under POL-019. Net
+  # behaviour (any canary or high-similarity leak denies) is unchanged; only
+  # the reported reason code is now accurate to what actually triggered it.
+  - id: deny_canary_leak
+    plane: [response]
+    when: {category: CANARY_LEAK}
+    verdict: DENY
+    hard_deny: true
+    reason_code: CANARY_LEAK
+
+  - id: deny_system_prompt_leak
+    plane: [response]
+    when: {category: SYSTEM_PROMPT_LEAK, score_gte: 0.8}
+    verdict: DENY
+    hard_deny: true
+    reason_code: SYSTEM_PROMPT_LEAK

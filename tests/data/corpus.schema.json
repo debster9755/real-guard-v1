@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://real-guard-v1/tests/data/corpus.schema.json",
+  "title": "real-guard-v1 golden corpus case",
+  "description": "Schema for one line of tests/data/golden_corpus.jsonl. See SPEC.md §17.3/§17.4.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id", "category", "direction", "description", "payload",
+    "expected_verdict", "expected_transformation",
+    "expected_reason_codes", "expected_policy_hits"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "pattern": "^(BEN|INJ|ENC|IND|PII|SCR|OUT|LEK|TOL)-[0-9]{3}$"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "BENIGN", "DIRECT_INJECTION", "ENCODED_INJECTION", "INDIRECT_INJECTION",
+        "PII_INPUT", "SECRET_INPUT", "OUTPUT_LEAKAGE", "LEAK_OUTPUT", "TOOL_ABUSE"
+      ],
+      "description": "PLAN.md §9.3 bucket distribution."
+    },
+    "direction": {
+      "type": "string",
+      "enum": ["INPUT", "OUTPUT"]
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "type": "object",
+      "description": "A chat-completion request body. May carry x-realguard-test-trigger for output-plane cases driven by MockProvider seeded triggers (TST-021).",
+      "required": ["messages"],
+      "properties": {
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["role", "content"],
+            "properties": {
+              "role": {"type": "string", "enum": ["system", "user", "assistant", "tool"]},
+              "content": {"type": "string"}
+            }
+          }
+        },
+        "tools": {"type": "array"}
+      }
+    },
+    "expected_verdict": {
+      "type": "string",
+      "enum": ["ALLOW", "DENY", "NEED_APPROVAL"]
+    },
+    "expected_transformation": {
+      "type": "string",
+      "enum": ["NONE", "REDACT", "MASK", "SANITIZE", "REWRITE", "TRUNCATE"]
+    },
+    "expected_reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "PROMPT_INJECTION", "JAILBREAK", "INDIRECT_INJECTION", "ENCODED_PAYLOAD",
+          "PII_DETECTED", "SECRET_DETECTED", "BLOCKED_TOPIC", "SENSITIVE_TOPIC",
+          "SENSITIVE_ACTION", "DESTRUCTIVE_ACTION", "TOOL_NOT_ALLOWLISTED",
+          "SYSTEM_PROMPT_LEAK", "CANARY_LEAK", "OUTPUT_PII", "OUTPUT_SECRET",
+          "PAYLOAD_TOO_LARGE", "RATE_LIMITED", "SCHEMA_VIOLATION",
+          "DETECTOR_TIMEOUT", "DETECTOR_UNAVAILABLE", "POLICY_UNAVAILABLE",
+          "TRANSFORMATION_FAILED", "OUTPUT_GUARD_FAILED", "ARGUMENTS_CHANGED"
+        ]
+      }
+    },
+    "expected_policy_hits": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}
+    }
+  }
+}

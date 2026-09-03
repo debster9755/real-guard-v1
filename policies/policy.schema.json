@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://real-guard-v1/policies/policy.schema.json",
+  "title": "real-guard-v1 policy document",
+  "description": "Normative structure for a real-guard-v1 policy file. See SPEC.md §7. additionalProperties is false everywhere per POL-020: an unknown key MUST fail validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "metadata", "defaults", "detectors", "rules"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "POL-015: policy_version is derived from this document's hash, not this field."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "description": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["detector_failure_mode", "unknown_tool", "max_request_bytes"],
+      "properties": {
+        "detector_failure_mode": {
+          "type": "string",
+          "enum": ["fail_open", "fail_closed"],
+          "description": "POL-008: fail_open in development, fail_closed in production/standard-security."
+        },
+        "unknown_tool": {
+          "type": "string",
+          "enum": ["deny", "allow"],
+          "description": "Behaviour when a tool_call names a tool absent from every allowlist rule."
+        },
+        "max_request_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 10485760,
+          "description": "Mirrors MAX_REQUEST_BYTES; a policy-level ceiling enforced by the payload_limit rule."
+        }
+      }
+    },
+    "detectors": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One entry per required detector_id from SPEC.md §6.4. All six are required so a policy cannot silently omit a detector.",
+      "required": ["prompt_injection", "pii", "secrets", "topics", "system_prompt_leak", "tool_calls"],
+      "properties": {
+        "prompt_injection": {"$ref": "#/$defs/detectorConfig"},
+        "pii": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "timeout_ms", "types"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "timeout_ms": {"type": "integer", "minimum": 10, "maximum": 5000},
+            "types": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "enum": ["email", "phone", "ssn", "credit_card", "iban", "passport", "ip_address"]
+              },
+              "uniqueItems": true
+            }
+          }
+        },
+        "secrets": {"$ref": "#/$defs/detectorConfig"},
+        "topics": {"$ref": "#/$defs/detectorConfig"},
+        "system_prompt_leak": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "timeout_ms", "canaries"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "timeout_ms": {"type": "integer", "minimum": 10, "maximum": 5000},
+            "canaries": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "description": "Configured canary tokens injected into system prompts; DET-011."
+            }
+          }
+        },
+        "tool_calls": {"$ref": "#/$defs/detectorConfig"}
+      }
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/rule"}
+    }
+  },
+  "$defs": {
+    "detectorConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "timeout_ms"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "timeout_ms": {"type": "integer", "minimum": 10, "maximum": 5000}
+      }
+    },
+    "reasonCode": {
+      "type": "string",
+      "enum": [
+        "PROMPT_INJECTION", "JAILBREAK", "INDIRECT_INJECTION", "ENCODED_PAYLOAD",
+        "PII_DETECTED", "SECRET_DETECTED", "BLOCKED_TOPIC", "SENSITIVE_TOPIC",
+        "SENSITIVE_ACTION", "DESTRUCTIVE_ACTION", "TOOL_NOT_ALLOWLISTED",
+        "SYSTEM_PROMPT_LEAK", "CANARY_LEAK", "OUTPUT_PII", "OUTPUT_SECRET",
+        "PAYLOAD_TOO_LARGE", "RATE_LIMITED", "SCHEMA_VIOLATION",
+        "DETECTOR_TIMEOUT", "DETECTOR_UNAVAILABLE", "POLICY_UNAVAILABLE",
+        "TRANSFORMATION_FAILED", "OUTPUT_GUARD_FAILED", "ARGUMENTS_CHANGED"
+      ],
+      "description": "The closed reason-code taxonomy, POL-011."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["ALLOW", "DENY", "NEED_APPROVAL"]
+    },
+    "transformation": {
+      "type": "string",
+      "enum": ["NONE", "REDACT", "MASK", "SANITIZE", "REWRITE", "TRUNCATE"]
+    },
+    "plane": {
+      "type": "string",
+      "enum": ["input", "context", "response", "action"]
+    },
+    "condition": {
+      "description": "A single match condition, or a combinator (all/any) of nested conditions. POL-016/017/018.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/condition"}},
+        "any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/condition"}},
+        "category": {
+          "type": "string",
+          "enum": [
+            "PROMPT_INJECTION", "JAILBREAK", "INDIRECT_INJECTION", "ENCODED_PAYLOAD",
+            "PII_DETECTED", "SECRET_DETECTED", "BLOCKED_TOPIC", "SENSITIVE_TOPIC",
+            "OUTPUT_PII", "OUTPUT_SECRET", "SYSTEM_PROMPT_LEAK", "CANARY_LEAK",
+            "SCHEMA_VIOLATION"
+          ]
+        },
+        "score_gte": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "score_lt": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "bytes_gt": {"type": "integer", "minimum": 0},
+        "tool_name_in": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "tool_not_in": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "argument_path": {"type": "string", "minLength": 1, "description": "A JSONPath into tool-call arguments, e.g. $.amount"},
+        "numeric_gte": {"type": "number"},
+        "numeric_lt": {"type": "number"},
+        "sql_verb_in": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "sql_unbounded_mutation": {"type": "boolean"},
+        "shell_pattern_in": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["recursive_force_remove", "device_write", "fork_bomb", "piped_download_execute", "privilege_escalation"]},
+          "minItems": 1
+        }
+      }
+    },
+    "rateLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "window_seconds", "scope"],
+      "properties": {
+        "requests": {"type": "integer", "minimum": 1},
+        "window_seconds": {"type": "integer", "minimum": 1},
+        "scope": {"type": "string", "enum": ["identity", "global"]}
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "plane", "verdict", "reason_code"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "plane": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/plane"},
+          "uniqueItems": true,
+          "description": "POL-017: plane is mandatory and explicit on every rule."
+        },
+        "when": {"$ref": "#/$defs/condition"},
+        "rate_limit": {"$ref": "#/$defs/rateLimit"},
+        "verdict": {"$ref": "#/$defs/verdict"},
+        "hard_deny": {
+          "type": "boolean",
+          "description": "POL-004: forces DENY unconditionally when true; only meaningful when verdict is DENY."
+        },
+        "mandatory_approval": {
+          "type": "boolean",
+          "description": "POL-005: forces NEED_APPROVAL unconditionally when true; only meaningful when verdict is NEED_APPROVAL."
+        },
+        "transformation": {"$ref": "#/$defs/transformation"},
+        "reason_code": {"$ref": "#/$defs/reasonCode"}
+      },
+      "anyOf": [
+        {"required": ["when"]},
+        {"required": ["rate_limit"]}
+      ],
+      "description": "POL-018: a rule may declare verdict and transformation together; transformation without verdict is structurally impossible here since verdict is required on every rule."
+    }
+  }
+}
