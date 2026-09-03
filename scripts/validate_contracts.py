@@ -15,6 +15,7 @@ Checks (PLAN.md §6 Phase 0 automated checks, plus TST-023):
 Exit code 0 on success, 1 on any failure. Intended to become a CI job in
 Phase 1 (WS-01) — see .github/workflows/ci.yml once authored.
 """
+
 import copy
 import json
 import sys
@@ -73,9 +74,15 @@ def main() -> int:
 
     cv = Draft202012Validator(corpus_schema)
     expected_distribution = {
-        "BENIGN": 12, "DIRECT_INJECTION": 10, "ENCODED_INJECTION": 6,
-        "INDIRECT_INJECTION": 4, "PII_INPUT": 6, "SECRET_INPUT": 4,
-        "OUTPUT_LEAKAGE": 4, "LEAK_OUTPUT": 4, "TOOL_ABUSE": 4,
+        "BENIGN": 12,
+        "DIRECT_INJECTION": 10,
+        "ENCODED_INJECTION": 6,
+        "INDIRECT_INJECTION": 4,
+        "PII_INPUT": 6,
+        "SECRET_INPUT": 4,
+        "OUTPUT_LEAKAGE": 4,
+        "LEAK_OUTPUT": 4,
+        "TOOL_ABUSE": 4,
     }
     distribution: dict[str, int] = {}
     seen_ids: set[str] = set()

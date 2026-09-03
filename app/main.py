@@ -1,10 +1,12 @@
 """FastAPI gateway. SPEC.md §2.1, §4.
 
-Phase 1 scope only (PLAN.md §6): the gateway, the mock provider, and the
-error/response envelope. There is deliberately **no detection and no policy
-evaluation yet** — every request that passes validation is ALLOW/NONE via
-MockProvider. WS-04 (detectors) and WS-05 (decision engine) replace the
-`_run_pipeline` stub in Phase 2 without changing this module's contract.
+Phase 2 (PLAN.md §6, ADR 0003): full input-plane inspection is wired in —
+normalizer, detector orchestrator, risk aggregation, decision engine, and
+REDACT transformation. Scope is exactly the six corpus buckets ADR 0003
+names (BENIGN, DIRECT_INJECTION, INDIRECT_INJECTION, ENCODED_INJECTION,
+PII_INPUT, SECRET_INPUT). Output-plane inspection, tool-call inspection, and
+durable NEED_APPROVAL persistence are Phase 3/4 — see `_need_approval_stub`
+below for the honest interim behaviour.
 """
 
 from __future__ import annotations
@@ -21,17 +23,24 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import Settings, load_settings
+from app.decision import Decision
+from app.detectors.base import Detector, Finding
 from app.errors import ConfigurationError, ErrorCode, FirewallError
 from app.ids import new_transaction_id
+from app.pipeline import build_input_detectors, run_input_pipeline
 from app.policy import Policy, PolicyLoadError, load_policy
 from app.providers.mock import MockProvider
 from app.schemas import (
     AllowedResponse,
+    DeniedFirewallMetadata,
+    DeniedResponse,
+    FindingSummary,
     FirewallMetadata,
     HealthzResponse,
     ReadyzDependencies,
     ReadyzResponse,
 )
+from app.transform import TransformationError, apply_transformations
 
 logger = logging.getLogger("realguard")
 
@@ -51,6 +60,7 @@ class AppState:
     policy: Policy | None
     policy_error: str | None
     provider: MockProvider
+    detectors: list[Detector]
 
     def __init__(self) -> None:
         self.settings = load_settings()
@@ -80,6 +90,8 @@ class AppState:
             # is failing.
             self.policy = None
             self.policy_error = str(e)
+
+        self.detectors = build_input_detectors(self.policy) if self.policy else []
 
 
 def create_app() -> FastAPI:
@@ -223,6 +235,57 @@ def register_exception_handlers(app: FastAPI) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _confidence_for_reason_codes(
+    findings: tuple[Finding, ...], reason_codes: tuple[str, ...]
+) -> list[FindingSummary]:
+    """API-009: the DENY response's findings_summary carries detector
+    identity, category and confidence only — never evidence text. One
+    summary entry per distinct (detector_id, category) pair among the
+    findings that actually contributed to the winning verdict."""
+    seen: set[tuple[str, str]] = set()
+    summaries: list[FindingSummary] = []
+    for f in findings:
+        if f.category.value not in reason_codes:
+            continue
+        key = (f.detector_id, f.category.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        summaries.append(
+            FindingSummary(
+                detector_id=f.detector_id, category=f.category.value, confidence=f.confidence.value
+            )
+        )
+    return summaries
+
+
+def _need_approval_stub(decision: Decision, txn_id: str) -> FirewallError:
+    """NEED_APPROVAL's real contract (SPEC.md §4.3, §9) requires durable
+    approval persistence — APR-005: an approval MUST exist in storage
+    *before* the 202 is returned, and APR-002: no side effect before
+    authorization. Neither exists yet (WS-09 is Phase 4). Faking a 202 with
+    an approval_id nothing can ever resolve would be strictly worse than
+    refusing: it would promise a review that can never happen. The only
+    honest, safe behaviour available now is to refuse the request (no
+    upstream call is made either way) while being explicit that this is an
+    infrastructure gap, not a claim that the content is malicious.
+    """
+    return FirewallError(
+        ErrorCode.POLICY_DENIED,
+        "This request requires human approval, which is not yet implemented "
+        "(approval persistence arrives in Phase 4 — PLAN.md WS-09). Refused "
+        "rather than approved automatically or falsely acknowledged.",
+        status=403,
+        details={
+            "reason_codes": list(decision.reason_codes),
+            "policy_hits": [
+                h.rule_id for h in decision.policy_hits if h.verdict == "NEED_APPROVAL"
+            ],
+            "would_be_decision": "NEED_APPROVAL",
+        },
+    )
+
+
 def register_routes(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
     async def create_chat_completion(request: Request) -> Response:
@@ -247,11 +310,80 @@ def register_routes(app: FastAPI) -> None:
             )
 
         mode = "mock" if state.settings.mock_mode else "live"
-        policy_version = state.policy.policy_version if state.policy else "unavailable"
 
-        t0 = time.perf_counter()
-        upstream_response = await state.provider.complete(body)
-        firewall_added_ms = (time.perf_counter() - t0) * 1000
+        # POL-009: no cached policy and none loaded at boot -> 503, never a
+        # silent allow.
+        if state.policy is None:
+            raise FirewallError(
+                ErrorCode.POLICY_UNAVAILABLE,
+                "The policy engine is unavailable and no cached policy exists.",
+            )
+        policy_version = state.policy.policy_version
+
+        t_detect0 = time.perf_counter()
+        result = await run_input_pipeline(
+            body["messages"],
+            state.policy,
+            state.detectors,
+            salt=state.settings.effective_hash_salt(),
+            detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
+        )
+        detection_ms = (time.perf_counter() - t_detect0) * 1000
+        decision = result.decision
+
+        if decision.verdict == "DENY":
+            denied = DeniedResponse(
+                risk_level=result.risk.risk_level.value,
+                reason_codes=list(decision.reason_codes),
+                policy_hits=[h.rule_id for h in decision.policy_hits if h.verdict == "DENY"],
+                transaction_id=txn_id,
+                message="Request blocked by policy.",
+                firewall=DeniedFirewallMetadata(
+                    policy_version=policy_version,
+                    degraded=decision.degraded,
+                    mode=mode,
+                    findings_summary=_confidence_for_reason_codes(
+                        result.findings, decision.reason_codes
+                    ),
+                ),
+            )
+            response = JSONResponse(status_code=403, content=denied.model_dump())
+            response.headers["X-RealGuard-Transaction-Id"] = txn_id
+            response.headers["X-RealGuard-Mode"] = mode
+            return response
+
+        if decision.verdict == "NEED_APPROVAL":
+            raise _need_approval_stub(decision, txn_id)
+
+        # ALLOW — apply REDACT (the only Phase-2 transformation; ADR 0003)
+        # to each message's content before forwarding upstream.
+        forward_messages = body["messages"]
+        if decision.transformation != "NONE":
+            try:
+                transformed = []
+                for m in forward_messages:
+                    if isinstance(m.get("content"), str):
+                        new_content, _record = apply_transformations(
+                            m["content"], {decision.transformation}
+                        )
+                        transformed.append({**m, "content": new_content})
+                    else:
+                        transformed.append(m)
+                forward_messages = transformed
+            except TransformationError as e:
+                # TRN-007: fail closed — DENY with TRANSFORMATION_FAILED.
+                raise FirewallError(
+                    ErrorCode.POLICY_DENIED,
+                    "A required content transformation could not be applied.",
+                    status=403,
+                    details={"reason_codes": ["TRANSFORMATION_FAILED"]},
+                ) from e
+
+        forward_body = {**body, "messages": forward_messages}
+
+        t_upstream0 = time.perf_counter()
+        upstream_response = await state.provider.complete(forward_body)
+        upstream_ms = (time.perf_counter() - t_upstream0) * 1000
 
         # ADR 0002: the completion fields go at the TOP LEVEL (unpacked from
         # upstream_response), not nested under a `response` key — required
@@ -265,14 +397,19 @@ def register_routes(app: FastAPI) -> None:
             usage=upstream_response["usage"],
             firewall=FirewallMetadata(
                 transaction_id=txn_id,
+                transformation=decision.transformation,
+                risk_level=result.risk.risk_level.value,
+                reason_codes=list(decision.reason_codes),
+                policy_hits=[h.rule_id for h in decision.policy_hits if h.verdict == "ALLOW"],
                 policy_version=policy_version,
+                degraded=decision.degraded,
                 mode=mode,
                 timings_ms={
-                    "detection": 0.0,
-                    "policy": 0.0,
-                    "upstream": firewall_added_ms,
-                    "output_guard": 0.0,
-                    "firewall_added": firewall_added_ms,
+                    "detection": detection_ms,
+                    "policy": 0.0,  # folded into detection_ms; not separated yet
+                    "upstream": upstream_ms,
+                    "output_guard": 0.0,  # Phase 3 (WS-07)
+                    "firewall_added": detection_ms,
                 },
             ),
         )

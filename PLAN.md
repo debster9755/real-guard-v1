@@ -349,9 +349,9 @@ Phases are gated by evidence, not by dates. A phase is complete when its exit ga
 ### Phase 3 — Upstream proxy and output inspection
 
 - **Preconditions** — Phase 2 gate.
-- **Tasks** — WS-06 (generic provider), WS-07.
-- **Deliverables** — real upstream proxying; the output guard; output transformations; upstream error mapping.
-- **Automated checks** — output-plane corpus buckets pass; upstream timeout, 5xx and malformed-response tests pass.
+- **Tasks** — WS-06 (generic provider), WS-07, **WS-08** (ADR 0003: never assigned a phase number in the original table below — a real gap, not a deliberate omission; WS-08's `system_prompt_leak` and `tool_calls` detectors are both response/action-plane concerns that pair naturally with the output guard, and neither needs approval persistence to produce a `DENY` verdict).
+- **Deliverables** — real upstream proxying; the output guard; output transformations; upstream error mapping; tool-call inspection (inspect-only, `DENY` path complete; `NEED_APPROVAL` path completes in Phase 4 once approval persistence exists).
+- **Automated checks** — output-plane corpus buckets pass (`OUTPUT_LEAKAGE`, `LEAK_OUTPUT`); the three `TOOL_ABUSE` `DENY` cases (TOL-002/003/004) pass; TOL-001 (`NEED_APPROVAL`) is verified for correct *decision* (verdict, reason code, policy hit) but not yet for full API round-trip; upstream timeout, 5xx and malformed-response tests pass.
 - **Manual validation** — a response containing a seeded SSN is redacted before the client sees it.
 - **Exit gate** — no response path bypasses the output guard, asserted by a test that enumerates every return statement in the completion handler.
 

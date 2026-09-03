@@ -223,9 +223,7 @@ class Settings(BaseSettings):
         # CONTENT_ENCRYPTION_KEY required if CONTENT_RETENTION=encrypted.
         if ContentRetention.encrypted == self.CONTENT_RETENTION:
             if self.CONTENT_ENCRYPTION_KEY is None:
-                errors.append(
-                    "CONTENT_ENCRYPTION_KEY is required when CONTENT_RETENTION=encrypted"
-                )
+                errors.append("CONTENT_ENCRYPTION_KEY is required when CONTENT_RETENTION=encrypted")
             elif (
                 len(self.CONTENT_ENCRYPTION_KEY.get_secret_value())
                 < _MIN_CONTENT_ENCRYPTION_KEY_BYTES
@@ -253,7 +251,9 @@ class Settings(BaseSettings):
 
         if errors:
             raise ConfigurationError(
-                "Invalid configuration (" + str(len(errors)) + " error(s)):\n  - "
+                "Invalid configuration ("
+                + str(len(errors))
+                + " error(s)):\n  - "
                 + "\n  - ".join(errors)
             )
         return self

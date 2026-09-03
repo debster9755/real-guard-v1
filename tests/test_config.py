@@ -171,7 +171,7 @@ def test_secret_value_never_appears_in_repr() -> None:
 
 
 def test_ephemeral_session_secret_stable_within_a_process() -> None:
-    """"Ephemeral" means not persisted across restarts — NOT regenerated on
+    """ "Ephemeral" means not persisted across restarts — NOT regenerated on
     every call. A value that changed between calls within one process would
     make a session cookie unverifiable moments after being signed."""
     s = Settings(_env_file=None)  # type: ignore[call-arg]
