@@ -111,10 +111,11 @@ DET-008 and DET-009 already say exactly this; §17.4's bucket label was shorthan
 
 ## Consequences
 
-- `default_policy.yaml` now has 19 rules (13 from the SPEC excerpt, unchanged, plus 6
+- `default_policy.yaml` now has 21 rules (13 from the SPEC excerpt, unchanged, plus 8
   new: `deny_jailbreak`, `review_probable_jailbreak`, `deny_indirect_injection`,
-  `deny_encoded_payload`, `redact_secrets_inbound`, and the `deny_canary_leak` /
-  `deny_system_prompt_leak` split replacing the single `deny_system_prompt_canary`).
+  `deny_encoded_payload`, `deny_blocked_topic`, `review_sensitive_topic`,
+  `redact_secrets_inbound`, and the `deny_canary_leak` / `deny_system_prompt_leak`
+  split replacing the single `deny_system_prompt_canary`).
 - Every one of the 54 corpus cases now has an achievable, internally consistent
   expected outcome under the policy it is scored against.
 - `policies/policy.schema.json` gained `ENCODED_PAYLOAD` in one enum.
@@ -123,3 +124,55 @@ DET-008 and DET-009 already say exactly this; §17.4's bucket label was shorthan
   or any resolved decision in PLAN.md §16.
 - `policies/standard_security.yaml` (WS-02, not yet authored) must derive from this
   completed rule set, not from the §7.1 excerpt alone.
+
+## Addendum — realism review (requested before Phase 1)
+
+Before moving past Phase 0, each of the four newly-covered categories was reviewed
+for whether its corpus payload is a genuine real-world pattern or synthetic filler,
+not just for schema validity:
+
+- **JAILBREAK** (INJ-002/005/006/009): DAN-persona override, "pretend the rules do
+  not apply," "developer mode," "forget your guidelines" — four of the most-cited
+  jailbreak framings in the public literature, each structurally distinct.
+- **INDIRECT_INJECTION** (IND-001…004): RAG-retrieved-document injection (the
+  canonical vector, Greshake et al. 2023), tool-result injection, hidden-HTML-comment
+  injection in scraped content, and conversation/memory-replay poisoning — four
+  distinct vectors rather than four phrasings of one vector.
+- **ENCODED_PAYLOAD** (ENC-001/004/006): base64, percent-encoding, hex — exactly the
+  three encodings DET-008 names, each a documented real evasion technique.
+- **SECRET_DETECTED inbound** (SCR-001…004): AWS access key/secret pair, an
+  `sk-`-prefixed provider key, a PEM private-key block, a JWT — the four secret
+  shapes most commonly caught by real secret-scanning tools.
+
+**Conclusion:** no further corpus cases were added. The 54-case count and bucket
+distribution are a tested contract (TST-023, PLAN.md §9.3); expanding it needs a
+stronger reason than "more would be nice," and the existing cases are not
+placeholder text — they were already constructed from real attack patterns, not
+invented for schema-filling purposes.
+
+**One genuine gap found and closed in this pass:** `default_policy.yaml` had a
+`topics` detector configured but zero rules consuming `BLOCKED_TOPIC` or
+`SENSITIVE_TOPIC` findings — those categories existed in the taxonomy and the
+detector list but had no policy consequence at all. The 54-case corpus doesn't
+exercise this (no topic-bucket cases in §17.4), so it wasn't caught by
+`scripts/validate_contracts.py`, but leaving a configured detector's findings
+policy-inert is a real correctness gap, not a documentation nicety. Added:
+
+- `deny_blocked_topic` — plane `[input, context]`, `category: BLOCKED_TOPIC`,
+  `DENY`, `hard_deny: true`, `reason_code: BLOCKED_TOPIC`.
+- `review_sensitive_topic` — plane `[input, context]`, `category:
+  SENSITIVE_TOPIC`, `NEED_APPROVAL`, `reason_code: SENSITIVE_TOPIC`.
+
+Also added a `topics.blocked` and `topics.sensitive` word list to the `topics`
+detector config (previously just `{enabled, timeout_ms}` with no list to match
+against, per the SPEC.md §7.1 excerpt) — populated with a small, clearly-labelled
+starter set (illegal-weapons synthesis, CSAM, and similar for `blocked`;
+medical/legal/financial-advice topics for `sensitive`), since a topic rule with no
+configured topics is as inert as no rule at all. This is a starter list, not a
+claim of completeness — operators are expected to replace it (README §14 will say
+so). This required one addition to `policy.schema.json`'s `detectors.topics`
+sub-schema (a `blocked`/`sensitive` string-array pair) alongside the existing
+`{enabled, timeout_ms}` fields.
+
+No corpus case exercises these two rules (topics remain outside the 54-case
+contract), so this is policy/schema completeness only, not a corpus change.

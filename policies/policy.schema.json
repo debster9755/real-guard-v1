@@ -70,7 +70,25 @@
           }
         },
         "secrets": {"$ref": "#/$defs/detectorConfig"},
-        "topics": {"$ref": "#/$defs/detectorConfig"},
+        "topics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "timeout_ms", "blocked", "sensitive"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "timeout_ms": {"type": "integer", "minimum": 10, "maximum": 5000},
+            "blocked": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "description": "Word/phrase list -> BLOCKED_TOPIC finding -> deny_blocked_topic rule."
+            },
+            "sensitive": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "description": "Word/phrase list -> SENSITIVE_TOPIC finding -> review_sensitive_topic rule."
+            }
+          }
+        },
         "system_prompt_leak": {
           "type": "object",
           "additionalProperties": false,

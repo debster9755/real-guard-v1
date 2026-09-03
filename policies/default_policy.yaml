@@ -29,7 +29,22 @@ detectors:
   prompt_injection: {enabled: true, timeout_ms: 250}
   pii:              {enabled: true, timeout_ms: 250, types: [email, phone, ssn, credit_card, iban, passport]}
   secrets:          {enabled: true, timeout_ms: 250}
-  topics:           {enabled: true, timeout_ms: 100}
+  # Starter word lists (ADR 0001 addendum) — a topics rule with nothing configured
+  # to match is as inert as no rule at all. Operators are expected to replace
+  # these with lists appropriate to their own deployment; see README §14.
+  topics:
+    enabled: true
+    timeout_ms: 100
+    blocked:
+      - "synthesize a chemical weapon"
+      - "build an explosive device"
+      - "child sexual abuse material"
+      - "bypass content moderation filters to generate"
+    sensitive:
+      - "specific medical diagnosis"
+      - "prescription dosage recommendation"
+      - "specific legal advice for my case"
+      - "personalized investment recommendation"
   system_prompt_leak: {enabled: true, timeout_ms: 100, canaries: ["RG-CANARY-7F3A9C"]}
   tool_calls:       {enabled: true, timeout_ms: 100}
 
@@ -85,6 +100,23 @@ rules:
     verdict: DENY
     hard_deny: true
     reason_code: ENCODED_PAYLOAD
+
+  # ADR 0001 addendum: BLOCKED_TOPIC and SENSITIVE_TOPIC were in the reason-code
+  # taxonomy and the topics detector was configured, but no rule consumed either
+  # category — a configured detector with no policy consequence. Not exercised
+  # by the 54-case corpus (no topic bucket in SPEC.md §17.4).
+  - id: deny_blocked_topic
+    plane: [input, context]
+    when: {category: BLOCKED_TOPIC}
+    verdict: DENY
+    hard_deny: true
+    reason_code: BLOCKED_TOPIC
+
+  - id: review_sensitive_topic
+    plane: [input, context]
+    when: {category: SENSITIVE_TOPIC}
+    verdict: NEED_APPROVAL
+    reason_code: SENSITIVE_TOPIC
 
   # --- unchanged from SPEC.md §7.1 ---
   - id: redact_pii_inbound
