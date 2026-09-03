@@ -241,7 +241,12 @@
       },
       "FirewallMetadata": {
         "type": "object",
+        "description": "ADR 0002: carried as one top-level `firewall` field alongside the OpenAI completion fields, never wrapping them — see AllowedResponse.",
+        "required": ["decision", "transformation", "transaction_id", "policy_version", "mode"],
         "properties": {
+          "decision": {"type": "string", "const": "ALLOW"},
+          "transformation": {"$ref": "#/components/schemas/Transformation"},
+          "transaction_id": {"type": "string"},
           "risk_level": {"$ref": "#/components/schemas/RiskLevel"},
           "reason_codes": {"type": "array", "items": {"$ref": "#/components/schemas/ReasonCode"}},
           "policy_hits": {"type": "array", "items": {"type": "string"}},
@@ -253,12 +258,22 @@
       },
       "AllowedResponse": {
         "type": "object",
-        "required": ["decision", "transformation", "transaction_id", "response"],
+        "description": "ADR 0002: the OpenAI chat-completion object AT THE TOP LEVEL, plus one additional `firewall` metadata field — never nested under a `response` wrapper. Required so the real openai SDK's ChatCompletion parsing (which reads id/object/created/model/choices/usage from the top level) works unmodified; an unrecognised top-level field is tolerated and preserved via the SDK's model_extra, verified empirically against openai-python.",
+        "required": ["id", "object", "created", "model", "choices", "usage", "firewall"],
         "properties": {
-          "decision": {"type": "string", "const": "ALLOW"},
-          "transformation": {"$ref": "#/components/schemas/Transformation"},
-          "transaction_id": {"type": "string"},
-          "response": {"type": "object", "description": "OpenAI chat-completion response shape, sanitized by the output guard"},
+          "id": {"type": "string"},
+          "object": {"type": "string", "const": "chat.completion"},
+          "created": {"type": "integer"},
+          "model": {"type": "string"},
+          "choices": {"type": "array", "items": {"type": "object"}},
+          "usage": {
+            "type": "object",
+            "properties": {
+              "prompt_tokens": {"type": "integer"},
+              "completion_tokens": {"type": "integer"},
+              "total_tokens": {"type": "integer"}
+            }
+          },
           "firewall": {"$ref": "#/components/schemas/FirewallMetadata"}
         }
       },

@@ -650,26 +650,36 @@ sequenceDiagram
 
 #### Allowed request
 
+**API-018** (ADR 0002) — The `ALLOW` response body MUST be the OpenAI
+chat-completion object *at the top level* — `id`, `object`, `created`, `model`,
+`choices` and `usage` MUST NOT be nested under a `response` field. Firewall
+metadata MUST be carried in one additional top-level field, `firewall`. This is
+required for WS-03's acceptance criterion ("an unmodified `openai` Python client
+can call the endpoint") to actually hold: the SDK parses the top-level body
+directly as `ChatCompletion`, and an unrecognised extra top-level field (verified
+against the real SDK, not assumed) is tolerated and preserved via
+`.model_extra` — nesting the completion under `response` is not. See ADR 0002
+for the full account, including why `DENY` and `NEED_APPROVAL` were not changed
+the same way.
+
 ```json
 {
-  "decision": "ALLOW",
-  "transformation": "NONE",
-  "transaction_id": "txn_01HQ8XKJ4M2N7P9R3T5V6W8Y0Z",
-  "response": {
-    "id": "chatcmpl_01HQ8XKJ4M2N7P9R3T5V6W8Y10",
-    "object": "chat.completion",
-    "created": 1772409600,
-    "model": "qwen3:8b",
-    "choices": [
-      {
-        "index": 0,
-        "message": {"role": "assistant", "content": "Cream the butter and sugar, then fold in three mashed bananas."},
-        "finish_reason": "stop"
-      }
-    ],
-    "usage": {"prompt_tokens": 18, "completion_tokens": 16, "total_tokens": 34}
-  },
+  "id": "chatcmpl_01HQ8XKJ4M2N7P9R3T5V6W8Y10",
+  "object": "chat.completion",
+  "created": 1772409600,
+  "model": "qwen3:8b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "Cream the butter and sugar, then fold in three mashed bananas."},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 18, "completion_tokens": 16, "total_tokens": 34},
   "firewall": {
+    "decision": "ALLOW",
+    "transformation": "NONE",
+    "transaction_id": "txn_01HQ8XKJ4M2N7P9R3T5V6W8Y0Z",
     "risk_level": "NONE",
     "reason_codes": [],
     "policy_hits": [],
@@ -680,6 +690,10 @@ sequenceDiagram
   }
 }
 ```
+
+`transaction_id` and `mode` are additionally duplicated into the
+`X-RealGuard-Transaction-Id` / `X-RealGuard-Mode` response headers (API-002), so
+a caller can read firewall metadata without touching the body at all.
 
 #### Denied request
 
@@ -1707,6 +1721,8 @@ Three redact; OUT-003 hard-denies, because a leaked credential cannot be made sa
 **DOC-003** — Each demonstration MUST show a real command, its real output, and the corpus case that covers it. At minimum: a benign request (`BEN-001`), a denied injection (`INJ-001`), a PII redaction (`PII-001`), an approval and resume (`TOL-001`), and an output leak block (`LEK-001`).
 
 **DOC-004** — Every fenced `bash` block marked `<!-- test -->` MUST be executed by CI against a running mock-mode container.
+
+**DOC-013** (ADR 0002) — The API reference (§13 of the README structure above) MUST tell integrators explicitly that a 2xx status alone does not mean "a normal completion was returned": `NEED_APPROVAL` is `202`, which the `openai` SDK does not raise on, and attempting `.choices[0]` on that body produces a confusing `None`-field object rather than a clear signal. A caller using approvals MUST check for `NEED_APPROVAL` (or use the raw HTTP response) before trusting `.choices`.
 
 **DOC-010** — The measured-results section MUST contain only numbers present in `docs/benchmarks.md`, enforced by a CI check. It MUST state the hardware, the date and the commit SHA.
 

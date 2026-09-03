@@ -48,7 +48,10 @@ def main() -> int:
     policy = yaml.safe_load((ROOT / "policies/default_policy.yaml").read_text())
     pv = Draft202012Validator(policy_schema)
     errors = list(pv.iter_errors(policy))
-    check(not errors, f"default_policy.yaml validates against policy.schema.json ({len(errors)} errors)")
+    check(
+        not errors,
+        f"default_policy.yaml validates against policy.schema.json ({len(errors)} errors)",
+    )
     for e in errors:
         print("   ", list(e.path), e.message)
 
@@ -98,13 +101,19 @@ def main() -> int:
                 print(f"   {cid}: policy hit '{hit}' is not a real rule id")
 
     check(schema_ok, "every corpus case validates against corpus.schema.json, ids unique")
-    check(distribution == expected_distribution,
-          f"corpus bucket distribution matches PLAN.md §9.3 (got {distribution})")
-    check(hits_ok, "every expected_policy_hits entry references a real rule id in default_policy.yaml")
+    check(
+        distribution == expected_distribution,
+        f"corpus bucket distribution matches PLAN.md §9.3 (got {distribution})",
+    )
+    check(
+        hits_ok,
+        "every expected_policy_hits entry references a real rule id in default_policy.yaml",
+    )
 
     # 5. openapi.json — 8 canonical endpoints.
     openapi = json.loads((ROOT / "openapi.json").read_text())
-    check(len(openapi["paths"]) == 8, f"openapi.json declares exactly 8 paths (found {len(openapi['paths'])})")
+    n_paths = len(openapi["paths"])
+    check(n_paths == 8, f"openapi.json declares exactly 8 paths (found {n_paths})")
 
     return report()
 
