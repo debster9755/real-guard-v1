@@ -112,10 +112,17 @@ rules:
     hard_deny: true
     reason_code: BLOCKED_TOPIC
 
+  # ADR 0004 §7: `transformation: REDACT` added so a sensitive-topic hold
+  # doesn't show a reviewer a caller's raw PII/secrets any more than a plain
+  # ALLOW would (APR-012, TRN-008) — apply_redact() is a documented no-op
+  # when nothing matches (app/transform.py), so this is strictly additive:
+  # it changes no existing case's outcome, only what a reviewer sees when
+  # PII/secrets happen to be present alongside a sensitive-topic phrase.
   - id: review_sensitive_topic
     plane: [input, context]
     when: {category: SENSITIVE_TOPIC}
     verdict: NEED_APPROVAL
+    transformation: REDACT
     reason_code: SENSITIVE_TOPIC
 
   # --- unchanged from SPEC.md §7.1 ---

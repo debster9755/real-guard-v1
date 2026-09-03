@@ -120,6 +120,24 @@ _JB_PATTERNS: tuple[tuple[str, re.Pattern[str], float, Confidence], ...] = (
         0.9,
         Confidence.HIGH,
     ),
+    # ADR 0004: a softer, real-world social-engineering cue — "let's roleplay
+    # a character with no restrictions" — rather than a direct persona
+    # command like DAN. Scored in [0.50, 0.85) deliberately: this is
+    # genuinely ambiguous (roleplay requests are also entirely benign) and
+    # is the scenario review_probable_jailbreak (policies/default_policy.yaml)
+    # exists for, not an auto-deny. Before this addition every JAILBREAK/
+    # PROMPT_INJECTION pattern scored >=0.85, so that rule had no reachable
+    # trigger — see ADR 0004 §1.
+    (
+        "roleplay_no_restrictions_v1",
+        re.compile(
+            r"\b(?:let'?s|we\s+can|please)\s+roleplay\b(?:\s+\S+){0,10}\s+"
+            r"(?:no\s+restrictions|unrestricted|without\s+(?:any\s+)?restrictions)\b",
+            re.IGNORECASE,
+        ),
+        0.65,
+        Confidence.MEDIUM,
+    ),
 )
 
 

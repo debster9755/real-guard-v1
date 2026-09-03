@@ -4,9 +4,16 @@ Phase 2 (PLAN.md §6, ADR 0003): full input-plane inspection is wired in —
 normalizer, detector orchestrator, risk aggregation, decision engine, and
 REDACT transformation. Scope is exactly the six corpus buckets ADR 0003
 names (BENIGN, DIRECT_INJECTION, INDIRECT_INJECTION, ENCODED_INJECTION,
-PII_INPUT, SECRET_INPUT). Output-plane inspection, tool-call inspection, and
-durable NEED_APPROVAL persistence are Phase 3/4 — see `_need_approval_stub`
-below for the honest interim behaviour.
+PII_INPUT, SECRET_INPUT).
+
+ADR 0004 (pulled forward from Phase 4, at the user's direction, before
+Phase 3): the NEED_APPROVAL path is real — durable persistence, the full
+state machine, a reviewer decision endpoint, a poll endpoint and a list
+endpoint — not the refusal stub Phase 2 shipped. See app/approvals.py and
+docs/adr/0004-approval-workflow-mvp.md for the full account and its scope
+boundary (the HTML reviewer dashboard is not part of this slice).
+
+Output-plane inspection and tool-call inspection remain Phase 3.
 """
 
 from __future__ import annotations
@@ -15,6 +22,7 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
@@ -22,27 +30,54 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.approvals import (
+    DecisionOutcome,
+    create_approval,
+    decide_approval,
+    get_approval,
+    get_approval_by_transaction,
+    get_transaction,
+    list_approvals,
+    reconcile_resuming_on_startup,
+    resume_approved,
+    sweep_expired,
+)
+from app.auth import IdentityClass, require_reviewer, resolve_identity
 from app.config import Settings, load_settings
-from app.decision import Decision
+from app.db import make_engine
 from app.detectors.base import Detector, Finding
 from app.errors import ConfigurationError, ErrorCode, FirewallError
-from app.ids import new_transaction_id
+from app.ids import new_id, new_transaction_id
+from app.materialargs import compute_material_args_hash
 from app.pipeline import build_input_detectors, run_input_pipeline
 from app.policy import Policy, PolicyLoadError, load_policy
 from app.providers.mock import MockProvider
 from app.schemas import (
     AllowedResponse,
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
+    ApprovalListResponse,
+    ApprovalPreview,
     DeniedFirewallMetadata,
     DeniedResponse,
     FindingSummary,
     FirewallMetadata,
     HealthzResponse,
+    NeedApprovalResponse,
     ReadyzDependencies,
     ReadyzResponse,
+    TransactionStatusResponse,
 )
-from app.transform import TransformationError, apply_transformations
+from app.transform import TransformationError, apply_transformation_to_messages
 
 logger = logging.getLogger("realguard")
+
+
+def _rfc3339(dt: datetime) -> str:
+    """API-005: RFC 3339 UTC with a `Z` suffix. Every datetime this module
+    touches is naive-but-UTC by app/approvals.py's `_now()` convention."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 _STREAM_FIELD_MESSAGE = (
     "stream:true is not supported in the MVP (API-014) — the output guard "
@@ -53,18 +88,32 @@ _STREAM_FIELD_MESSAGE = (
 
 
 class AppState:
-    """Process-wide state assembled at startup. Not a DB session — Phase 1
-    has no persistence yet (that arrives with WS-09 in Phase 4)."""
+    """Process-wide state assembled at startup.
+
+    ADR 0004: `db_engine` backs the approval workflow only (transactions are
+    written to it exactly when the verdict is NEED_APPROVAL — the ALLOW/DENY
+    paths remain exactly as Phase 2 left them, no DB dependency). Full
+    per-request persistence for every verdict is still Phase 4 (WS-09).
+    """
 
     settings: Settings
     policy: Policy | None
     policy_error: str | None
     provider: MockProvider
     detectors: list[Detector]
+    db_engine: Any
 
     def __init__(self) -> None:
         self.settings = load_settings()
         self.provider = MockProvider()
+        self.db_engine = make_engine(self.settings.DATABASE_URL)
+        # APR-014: reconcile any row a prior process crash left in RESUMING
+        # before this process serves a single request.
+        reconciled = reconcile_resuming_on_startup(
+            self.db_engine, self.settings.MAX_RESUME_ATTEMPTS
+        )
+        if reconciled:
+            logger.warning("startup: reconciled %d RESUMING approval(s) (APR-014)", reconciled)
 
         # DEP-004: mock mode must be visible in at least four places. This
         # is place 1 (startup log, WARNING); /readyz and the X-RealGuard-Mode
@@ -259,31 +308,23 @@ def _confidence_for_reason_codes(
     return summaries
 
 
-def _need_approval_stub(decision: Decision, txn_id: str) -> FirewallError:
-    """NEED_APPROVAL's real contract (SPEC.md §4.3, §9) requires durable
-    approval persistence — APR-005: an approval MUST exist in storage
-    *before* the 202 is returned, and APR-002: no side effect before
-    authorization. Neither exists yet (WS-09 is Phase 4). Faking a 202 with
-    an approval_id nothing can ever resolve would be strictly worse than
-    refusing: it would promise a review that can never happen. The only
-    honest, safe behaviour available now is to refuse the request (no
-    upstream call is made either way) while being explicit that this is an
-    infrastructure gap, not a claim that the content is malicious.
-    """
-    return FirewallError(
-        ErrorCode.POLICY_DENIED,
-        "This request requires human approval, which is not yet implemented "
-        "(approval persistence arrives in Phase 4 — PLAN.md WS-09). Refused "
-        "rather than approved automatically or falsely acknowledged.",
-        status=403,
-        details={
-            "reason_codes": list(decision.reason_codes),
-            "policy_hits": [
-                h.rule_id for h in decision.policy_hits if h.verdict == "NEED_APPROVAL"
-            ],
-            "would_be_decision": "NEED_APPROVAL",
-        },
-    )
+def _apply_transformation_or_deny(
+    messages: list[dict[str, Any]], transformation: str
+) -> list[dict[str, Any]]:
+    """TRN-007: fail closed — DENY with TRANSFORMATION_FAILED — rather than
+    forward partially-transformed content. Shared by the ALLOW and
+    NEED_APPROVAL branches (ADR 0004): the approval's `transformed_payload`
+    must be produced by exactly the same code the ALLOW path uses, or the
+    two could silently diverge."""
+    try:
+        return apply_transformation_to_messages(messages, transformation)
+    except TransformationError as e:
+        raise FirewallError(
+            ErrorCode.POLICY_DENIED,
+            "A required content transformation could not be applied.",
+            status=403,
+            details={"reason_codes": ["TRANSFORMATION_FAILED"]},
+        ) from e
 
 
 def register_routes(app: FastAPI) -> None:
@@ -353,32 +394,59 @@ def register_routes(app: FastAPI) -> None:
             return response
 
         if decision.verdict == "NEED_APPROVAL":
-            raise _need_approval_stub(decision, txn_id)
+            # ADR 0004: real persistence, not a refusal stub. APR-005: the
+            # approval row is committed *before* this handler returns 202.
+            identity = resolve_identity(request.headers.get("Authorization"), state.settings)
+            transformed_messages = _apply_transformation_or_deny(
+                body["messages"], decision.transformation
+            )
+            request_id = new_id("req")
+            transformed_payload = {**body, "messages": transformed_messages}
+            material_args_hash = compute_material_args_hash(transformed_messages, body.get("tools"))
+            retain_raw = state.settings.CONTENT_RETENTION.value in ("full", "encrypted")
+            need_approval_policy_hits = [
+                h.rule_id for h in decision.policy_hits if h.verdict == "NEED_APPROVAL"
+            ]
+            creation = create_approval(
+                state.db_engine,
+                transaction_id=txn_id,
+                request_id=request_id,
+                correlation_id=request.state.correlation_id,
+                creator_identity_id=identity.identity_id,
+                mode=mode,
+                risk_level=result.risk.risk_level.value,
+                reason_codes=list(decision.reason_codes),
+                policy_hits=need_approval_policy_hits,
+                transformation=decision.transformation,
+                policy_version=policy_version,
+                preview_content={"messages": transformed_messages},
+                transformed_payload=transformed_payload,
+                material_args_hash=material_args_hash,
+                ttl_seconds=state.settings.APPROVAL_TTL_SECONDS,
+                retain_raw_content=retain_raw,
+                raw_request_content=body if retain_raw else None,
+            )
+            approval = creation.approval
+            need_approval = NeedApprovalResponse(
+                risk_level=result.risk.risk_level.value,
+                reason_codes=list(decision.reason_codes),
+                policy_hits=need_approval_policy_hits,
+                transformation=decision.transformation,
+                transaction_id=txn_id,
+                request_id=request_id,
+                approval_id=approval.id,
+                expires_at=_rfc3339(approval.expires_at),
+                poll_url=f"/v1/firewall/requests/{request_id}",
+                message="Held for human approval.",
+            )
+            response = JSONResponse(status_code=202, content=need_approval.model_dump())
+            response.headers["X-RealGuard-Transaction-Id"] = txn_id
+            response.headers["X-RealGuard-Mode"] = mode
+            return response
 
         # ALLOW — apply REDACT (the only Phase-2 transformation; ADR 0003)
         # to each message's content before forwarding upstream.
-        forward_messages = body["messages"]
-        if decision.transformation != "NONE":
-            try:
-                transformed = []
-                for m in forward_messages:
-                    if isinstance(m.get("content"), str):
-                        new_content, _record = apply_transformations(
-                            m["content"], {decision.transformation}
-                        )
-                        transformed.append({**m, "content": new_content})
-                    else:
-                        transformed.append(m)
-                forward_messages = transformed
-            except TransformationError as e:
-                # TRN-007: fail closed — DENY with TRANSFORMATION_FAILED.
-                raise FirewallError(
-                    ErrorCode.POLICY_DENIED,
-                    "A required content transformation could not be applied.",
-                    status=403,
-                    details={"reason_codes": ["TRANSFORMATION_FAILED"]},
-                ) from e
-
+        forward_messages = _apply_transformation_or_deny(body["messages"], decision.transformation)
         forward_body = {**body, "messages": forward_messages}
 
         t_upstream0 = time.perf_counter()
@@ -430,7 +498,15 @@ def register_routes(app: FastAPI) -> None:
         policy_status: Any = "ok" if state.policy is not None else "invalid"
         provider_status: Any = "ok" if mode == "mock" else "not_configured"
 
-        ready = state.policy is not None
+        database_status: Any
+        try:
+            with state.db_engine.connect() as conn:
+                conn.exec_driver_sql("SELECT 1")
+            database_status = "ok"
+        except Exception:  # noqa: BLE001 — readiness probe: report, never raise
+            database_status = "unreachable"
+
+        ready = state.policy is not None and database_status == "ok"
         if not ready:
             response.status_code = 503
 
@@ -438,11 +514,124 @@ def register_routes(app: FastAPI) -> None:
             ready=ready,
             mode=mode,
             dependencies=ReadyzDependencies(
-                database="not_configured",  # DB arrives in Phase 4 (WS-09)
+                database=database_status,
                 policy=policy_status,
                 provider=provider_status,
             ),
         )
+
+    @app.get("/v1/firewall/requests/{transaction_or_request_id}")
+    async def get_transaction_status(transaction_or_request_id: str, request: Request) -> Response:
+        """SPEC.md §4.5. API-011: a cross-identity read returns 404, not
+        403, so the endpoint never confirms another identity's transaction
+        exists."""
+        state: AppState = app.state.rg
+        identity = resolve_identity(request.headers.get("Authorization"), state.settings)
+        sweep_expired(state.db_engine)
+
+        txn = get_transaction(state.db_engine, transaction_or_request_id)
+        if txn is None or (
+            identity.identity_class != IdentityClass.REVIEWER
+            and txn.identity_id != identity.identity_id
+        ):
+            raise FirewallError(ErrorCode.TRANSACTION_NOT_FOUND, "Unknown transaction.")
+
+        body: dict[str, Any] = {"transaction_id": txn.id, "status": txn.status}
+        if txn.status == "COMPLETED":
+            body["decision"] = txn.final_verdict
+            approval = get_approval_by_transaction(state.db_engine, txn.id)
+            if approval is not None:
+                body["response"] = approval.completion_result
+        payload = TransactionStatusResponse.model_validate(body).model_dump(exclude_none=True)
+        response = JSONResponse(status_code=200, content=payload)
+        response.headers["X-RealGuard-Transaction-Id"] = txn.id
+        response.headers["X-RealGuard-Mode"] = txn.mode
+        return response
+
+    @app.get("/v1/firewall/approvals")
+    async def list_pending_approvals(
+        request: Request,
+        status: list[str] | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> ApprovalListResponse:
+        """SPEC.md §4.4. API-010: reviewer-only, transformed preview only."""
+        state: AppState = app.state.rg
+        identity = resolve_identity(request.headers.get("Authorization"), state.settings)
+        require_reviewer(identity)
+        sweep_expired(state.db_engine)
+
+        limit = max(1, min(limit, 200))
+        rows, next_cursor = list_approvals(
+            state.db_engine, statuses=status, limit=limit, cursor=cursor
+        )
+        items = [
+            ApprovalPreview(
+                approval_id=r.id,
+                transaction_id=r.transaction_id,
+                status=r.state,
+                risk_level=r.risk_level,
+                reason_codes=r.reason_codes,
+                policy_hits=r.policy_hits,
+                preview=r.preview_content,
+                created_at=_rfc3339(r.created_at),
+                expires_at=_rfc3339(r.expires_at),
+            )
+            for r in rows
+        ]
+        return ApprovalListResponse(items=items, next_cursor=next_cursor)
+
+    @app.post("/v1/firewall/approvals/{approval_id}/decision")
+    async def decide_approval_endpoint(
+        approval_id: str, request: Request, body: ApprovalDecisionRequest
+    ) -> Response:
+        """SPEC.md §4.6. API-012: reviewer-only, Idempotency-Key required,
+        non-empty note required for DENY, self-approval forbidden (APR-009),
+        replay/conflict handling (APR-010)."""
+        state: AppState = app.state.rg
+        identity = resolve_identity(request.headers.get("Authorization"), state.settings)
+        require_reviewer(identity)
+
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if not idempotency_key:
+            raise FirewallError(
+                ErrorCode.INVALID_REQUEST,
+                "The Idempotency-Key header is required for this endpoint (API-007).",
+            )
+
+        sweep_expired(state.db_engine)
+        result = decide_approval(
+            state.db_engine,
+            approval_id,
+            decision=body.decision,
+            note=body.note,
+            reviewer_identity=identity,
+            idempotency_key=idempotency_key,
+            correlation_id=getattr(request.state, "correlation_id", approval_id),
+        )
+
+        # APR-011: a newly-APPROVED approval is resumed inline, synchronously,
+        # right here — this MVP has no separate worker process, so "the
+        # resume worker" (SPEC.md §2.14) is this same request handling the
+        # atomic APPROVED->RESUMING claim itself. Concurrency safety comes
+        # from BEGIN IMMEDIATE (app/db.py), not from being a distinct process.
+        if result.outcome == DecisionOutcome.APPLIED and result.approval.state == "APPROVED":
+            retain_response = state.settings.CONTENT_RETENTION.value in ("full", "encrypted")
+            await resume_approved(
+                state.db_engine,
+                approval_id,
+                provider=state.provider,
+                retain_response_content=retain_response,
+            )
+
+        final = get_approval(state.db_engine, approval_id)
+        assert final is not None
+        payload = ApprovalDecisionResponse(
+            approval_id=approval_id,
+            status=final.state,
+            decided_at=_rfc3339(result.decision_row.created_at),
+        )
+        return JSONResponse(status_code=200, content=payload.model_dump())
 
 
 try:

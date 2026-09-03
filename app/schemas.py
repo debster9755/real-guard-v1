@@ -128,6 +128,48 @@ class NeedApprovalResponse(BaseModel):
     message: str
 
 
+class ApprovalDecisionRequest(BaseModel):
+    """SPEC.md §4.6. API-012: `note` is required (non-empty) when
+    `decision` is DENY — enforced in app/approvals.py, not here, since the
+    rule is conditional on the field's own value."""
+
+    decision: Literal["APPROVE", "DENY"]
+    note: str | None = None
+    reviewer_id: str | None = None
+
+
+class ApprovalDecisionResponse(BaseModel):
+    approval_id: str
+    status: str
+    decided_at: str
+
+
+class ApprovalPreview(BaseModel):
+    """API-010, APR-012: `preview` carries transformed content only."""
+
+    approval_id: str
+    transaction_id: str
+    status: str
+    risk_level: RiskLevel
+    reason_codes: list[str]
+    policy_hits: list[str]
+    preview: dict[str, Any]
+    created_at: str
+    expires_at: str
+
+
+class ApprovalListResponse(BaseModel):
+    items: list[ApprovalPreview]
+    next_cursor: str | None = None
+
+
+class TransactionStatusResponse(BaseModel):
+    transaction_id: str
+    status: str
+    decision: Verdict | None = None
+    response: dict[str, Any] | None = None
+
+
 class ErrorDetail(BaseModel):
     code: str
     type: str

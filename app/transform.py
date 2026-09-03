@@ -20,6 +20,7 @@ imported, not re-implemented).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.detectors.pii import (
     _CARD_CANDIDATE_RE,
@@ -165,3 +166,26 @@ def apply_transformations(
             result, last_record = apply_redact(result)
         # MASK/SANITIZE/REWRITE/TRUNCATE: no Phase-2 caller (ADR 0003).
     return result, last_record
+
+
+def apply_transformation_to_messages(
+    messages: list[dict[str, Any]], transformation: str
+) -> list[dict[str, Any]]:
+    """Applies `transformation` to every string message `content`, leaving
+    everything else untouched. Shared by the immediate-ALLOW path
+    (app/main.py) and approval creation (app/approvals.py — ADR 0004): the
+    same transformed content that gets forwarded upstream synchronously on
+    ALLOW is what the approval's `transformed_payload` resumes with once a
+    reviewer approves, and what its `preview_content` shows them (APR-012,
+    TRN-008) — one code path, so the two can never silently drift apart.
+    """
+    if transformation == "NONE":
+        return messages
+    transformed: list[dict[str, Any]] = []
+    for m in messages:
+        if isinstance(m.get("content"), str):
+            new_content, _record = apply_transformations(m["content"], {transformation})
+            transformed.append({**m, "content": new_content})
+        else:
+            transformed.append(m)
+    return transformed

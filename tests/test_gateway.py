@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -131,7 +133,9 @@ def test_error_envelope_shape(client: TestClient) -> None:
     assert set(err.keys()) >= {"code", "type", "message", "transaction_id"}
 
 
-def test_mock_mode_announced_at_startup_dep004(caplog: pytest.LogCaptureFixture) -> None:
+def test_mock_mode_announced_at_startup_dep004(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """DEP-004: mock mode must be visible in >=4 places — this is place 1,
     the startup log line. (Places 2 and 3 — /readyz and the response header —
     are covered by test_readyz_reports_mock_mode and
@@ -141,6 +145,7 @@ def test_mock_mode_announced_at_startup_dep004(caplog: pytest.LogCaptureFixture)
 
     from app.main import create_app
 
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
     with caplog.at_level(logging.WARNING, logger="realguard"):
         create_app()
     assert any("MOCK MODE" in record.message for record in caplog.records)
@@ -217,12 +222,13 @@ def test_redacted_content_never_forwarded_to_provider(client: TestClient) -> Non
 
 
 def test_policy_unavailable_returns_503_when_no_policy_loaded(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """POL-009: no cached policy -> 503, never a silent allow."""
     from app.main import create_app
 
     monkeypatch.setenv("POLICY_PATH", "policies/does_not_exist.yaml")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
     app = create_app()
     with TestClient(app) as c:
         r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
