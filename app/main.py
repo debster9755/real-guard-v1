@@ -2,9 +2,7 @@
 
 Phase 2 (PLAN.md §6, ADR 0003): full input-plane inspection is wired in —
 normalizer, detector orchestrator, risk aggregation, decision engine, and
-REDACT transformation. Scope is exactly the six corpus buckets ADR 0003
-names (BENIGN, DIRECT_INJECTION, INDIRECT_INJECTION, ENCODED_INJECTION,
-PII_INPUT, SECRET_INPUT).
+REDACT transformation.
 
 ADR 0004 (pulled forward from Phase 4, at the user's direction, before
 Phase 3): the NEED_APPROVAL path is real — durable persistence, the full
@@ -13,7 +11,13 @@ endpoint — not the refusal stub Phase 2 shipped. See app/approvals.py and
 docs/adr/0004-approval-workflow-mvp.md for the full account and its scope
 boundary (the HTML reviewer dashboard is not part of this slice).
 
-Output-plane inspection and tool-call inspection remain Phase 3.
+Phase 3 (ADR 0005): the generic OpenAI-compatible provider adapter is wired
+in alongside MockProvider; the output guard (app/outputguard.py) runs after
+every upstream call on the ALLOW path (and, via app/approvals.py, on the
+approval-resume path too — SYS-014); and tool-call inspection
+(app/detectors/tool_calls.py, app/pipeline.py) gives the decision engine's
+already-built condition evaluator real tool_name/tool_arguments instead of
+Phase 2's empty stub.
 """
 
 from __future__ import annotations
@@ -45,13 +49,21 @@ from app.approvals import (
 from app.auth import IdentityClass, require_reviewer, resolve_identity
 from app.config import Settings, load_settings
 from app.db import make_engine
+from app.decision import combine_decisions
 from app.detectors.base import Detector, Finding
 from app.errors import ConfigurationError, ErrorCode, FirewallError
 from app.ids import new_id, new_transaction_id
 from app.materialargs import compute_material_args_hash
+from app.outputguard import run_output_guard, system_prompt_text_from_messages
 from app.pipeline import build_input_detectors, run_input_pipeline
 from app.policy import Policy, PolicyLoadError, load_policy
+from app.providers.base import Provider
 from app.providers.mock import MockProvider
+from app.providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    SsrfValidationError,
+    validate_upstream_url_for_production,
+)
 from app.schemas import (
     AllowedResponse,
     ApprovalDecisionRequest,
@@ -99,13 +111,13 @@ class AppState:
     settings: Settings
     policy: Policy | None
     policy_error: str | None
-    provider: MockProvider
+    provider: Provider
     detectors: list[Detector]
     db_engine: Any
 
     def __init__(self) -> None:
         self.settings = load_settings()
-        self.provider = MockProvider()
+        self.provider = self._build_provider(self.settings)
         self.db_engine = make_engine(self.settings.DATABASE_URL)
         # APR-014: reconcile any row a prior process crash left in RESUMING
         # before this process serves a single request.
@@ -141,6 +153,34 @@ class AppState:
             self.policy_error = str(e)
 
         self.detectors = build_input_detectors(self.policy) if self.policy else []
+
+    @staticmethod
+    def _build_provider(settings: Settings) -> Provider:
+        """WS-06 (ADR 0005): mock mode stays the default (DEP-004/DEP-005 —
+        unchanged from Phase 1); when UPSTREAM_BASE_URL is set, a real
+        OpenAICompatibleProvider is built instead (this is also the Ollama
+        profile's code path per SPEC.md §2.10 — Ollama is configuration, not
+        separate code). SYS-013: in production, the configured URL is
+        validated against SSRF rules *at startup*, so an unsafe upstream
+        fails the process rather than the first request (CFG-002)."""
+        if settings.mock_mode:
+            return MockProvider()
+
+        assert settings.UPSTREAM_BASE_URL is not None  # settings.mock_mode already excluded None
+        if settings.APP_ENV.value == "production":
+            try:
+                validate_upstream_url_for_production(settings.UPSTREAM_BASE_URL)
+            except SsrfValidationError as e:
+                raise ConfigurationError(f"UPSTREAM_BASE_URL is unsafe (SYS-013): {e}") from e
+
+        return OpenAICompatibleProvider(
+            base_url=settings.UPSTREAM_BASE_URL,
+            api_key=(
+                settings.UPSTREAM_API_KEY.get_secret_value() if settings.UPSTREAM_API_KEY else None
+            ),
+            model=settings.UPSTREAM_MODEL,
+            timeout_seconds=settings.REQUEST_TIMEOUT_SECONDS,
+        )
 
 
 def create_app() -> FastAPI:
@@ -284,6 +324,16 @@ def register_exception_handlers(app: FastAPI) -> None:
 # ---------------------------------------------------------------------------
 
 
+_RISK_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+
+
+def _max_risk_level(a: str, b: str) -> str:
+    """The worse of two risk_levels — used to combine the input pipeline's
+    assessment with the output guard's (ADR 0005): a request that scores
+    NONE on input but CRITICAL on egress must report CRITICAL overall."""
+    return a if _RISK_RANK[a] >= _RISK_RANK[b] else b
+
+
 def _confidence_for_reason_codes(
     findings: tuple[Finding, ...], reason_codes: tuple[str, ...]
 ) -> list[FindingSummary]:
@@ -368,6 +418,7 @@ def register_routes(app: FastAPI) -> None:
             state.detectors,
             salt=state.settings.effective_hash_salt(),
             detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
+            tools=body.get("tools"),
         )
         detection_ms = (time.perf_counter() - t_detect0) * 1000
         decision = result.decision
@@ -444,14 +495,92 @@ def register_routes(app: FastAPI) -> None:
             response.headers["X-RealGuard-Mode"] = mode
             return response
 
-        # ALLOW — apply REDACT (the only Phase-2 transformation; ADR 0003)
-        # to each message's content before forwarding upstream.
+        # ALLOW — apply REDACT (the only input-plane transformation; ADR
+        # 0003) to each message's content before forwarding upstream.
         forward_messages = _apply_transformation_or_deny(body["messages"], decision.transformation)
         forward_body = {**body, "messages": forward_messages}
 
         t_upstream0 = time.perf_counter()
         upstream_response = await state.provider.complete(forward_body)
         upstream_ms = (time.perf_counter() - t_upstream0) * 1000
+
+        # SYS-006/SYS-014 (ADR 0005): the output guard runs on every ALLOW
+        # response before it is ever serialized to the client — the only
+        # other route to a response body in this handler is the DENY/
+        # NEED_APPROVAL branches above, neither of which calls the upstream
+        # provider at all (SYS-002/APR-002), so no return statement in this
+        # handler bypasses the output guard for content that actually came
+        # from a model.
+        response_content = ""
+        response_choices = upstream_response.get("choices") or []
+        if response_choices and isinstance(response_choices[0], dict):
+            response_message = response_choices[0].get("message")
+            if isinstance(response_message, dict):
+                response_content = response_message.get("content") or ""
+
+        t_output0 = time.perf_counter()
+        guard_result = await run_output_guard(
+            response_content,
+            system_prompt_text_from_messages(forward_messages),
+            state.policy,
+            salt=state.settings.effective_hash_salt(),
+            detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
+            upstream_response=upstream_response,
+        )
+        output_guard_ms = (time.perf_counter() - t_output0) * 1000
+
+        # ADR 0005: combine_decisions() (originally built to merge several
+        # per-tool-candidate Decisions, app/pipeline.py) applies unchanged
+        # to merging the input-plane decision with the output guard's —
+        # same POL-002 precedence, same "union evidence, don't discard it"
+        # rule either way.
+        overall_decision = combine_decisions((decision, guard_result.decision))
+        overall_findings = result.findings + guard_result.findings
+        overall_risk_level = _max_risk_level(
+            result.risk.risk_level.value, guard_result.risk.risk_level.value
+        )
+
+        if overall_decision.verdict == "DENY":
+            # SPEC.md §3.7/§2.11: the upstream call already happened, but a
+            # response-plane DENY must still deny — the offending content is
+            # discarded here and never reaches the client (API-009 applies
+            # to output leaks exactly as it does to input ones). See the ADR
+            # for why this is the conservative, deliberately-chosen behaviour
+            # rather than silently downgrading to ALLOW because "the model
+            # already answered."
+            denied = DeniedResponse(
+                risk_level=overall_risk_level,
+                reason_codes=list(overall_decision.reason_codes),
+                policy_hits=[
+                    h.rule_id for h in overall_decision.policy_hits if h.verdict == "DENY"
+                ],
+                transaction_id=txn_id,
+                message="Response blocked by policy.",
+                firewall=DeniedFirewallMetadata(
+                    policy_version=policy_version,
+                    degraded=overall_decision.degraded,
+                    mode=mode,
+                    findings_summary=_confidence_for_reason_codes(
+                        overall_findings, overall_decision.reason_codes
+                    ),
+                ),
+            )
+            response = JSONResponse(status_code=403, content=denied.model_dump())
+            response.headers["X-RealGuard-Transaction-Id"] = txn_id
+            response.headers["X-RealGuard-Mode"] = mode
+            return response
+
+        # ALLOW (optionally REDACT-transformed by either plane): splice the
+        # output guard's sanitized content back into the response before it
+        # is ever serialized.
+        final_choices = list(upstream_response["choices"])
+        if final_choices and isinstance(final_choices[0], dict):
+            final_message = final_choices[0].get("message")
+            if isinstance(final_message, dict) and "content" in final_message:
+                final_choices[0] = {
+                    **final_choices[0],
+                    "message": {**final_message, "content": guard_result.sanitized_content},
+                }
 
         # ADR 0002: the completion fields go at the TOP LEVEL (unpacked from
         # upstream_response), not nested under a `response` key — required
@@ -461,23 +590,25 @@ def register_routes(app: FastAPI) -> None:
             object=upstream_response["object"],
             created=upstream_response["created"],
             model=upstream_response["model"],
-            choices=upstream_response["choices"],
+            choices=final_choices,
             usage=upstream_response["usage"],
             firewall=FirewallMetadata(
                 transaction_id=txn_id,
-                transformation=decision.transformation,
-                risk_level=result.risk.risk_level.value,
-                reason_codes=list(decision.reason_codes),
-                policy_hits=[h.rule_id for h in decision.policy_hits if h.verdict == "ALLOW"],
+                transformation=overall_decision.transformation,
+                risk_level=overall_risk_level,
+                reason_codes=list(overall_decision.reason_codes),
+                policy_hits=[
+                    h.rule_id for h in overall_decision.policy_hits if h.verdict == "ALLOW"
+                ],
                 policy_version=policy_version,
-                degraded=decision.degraded,
+                degraded=overall_decision.degraded,
                 mode=mode,
                 timings_ms={
                     "detection": detection_ms,
                     "policy": 0.0,  # folded into detection_ms; not separated yet
                     "upstream": upstream_ms,
-                    "output_guard": 0.0,  # Phase 3 (WS-07)
-                    "firewall_added": detection_ms,
+                    "output_guard": output_guard_ms,
+                    "firewall_added": detection_ms + output_guard_ms,
                 },
             ),
         )
@@ -616,12 +747,24 @@ def register_routes(app: FastAPI) -> None:
         # atomic APPROVED->RESUMING claim itself. Concurrency safety comes
         # from BEGIN IMMEDIATE (app/db.py), not from being a distinct process.
         if result.outcome == DecisionOutcome.APPLIED and result.approval.state == "APPROVED":
+            # POL-009: same "no cached policy -> 503" guard the gateway
+            # applies before every input-pipeline evaluation — the output
+            # guard below needs a loaded policy exactly as much as the input
+            # pipeline does.
+            if state.policy is None:
+                raise FirewallError(
+                    ErrorCode.POLICY_UNAVAILABLE,
+                    "The policy engine is unavailable and no cached policy exists.",
+                )
             retain_response = state.settings.CONTENT_RETENTION.value in ("full", "encrypted")
             await resume_approved(
                 state.db_engine,
                 approval_id,
                 provider=state.provider,
                 retain_response_content=retain_response,
+                policy=state.policy,
+                salt=state.settings.effective_hash_salt(),
+                detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
             )
 
         final = get_approval(state.db_engine, approval_id)

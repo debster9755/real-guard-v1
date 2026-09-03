@@ -27,7 +27,10 @@ from app.approvals import (
 from app.auth import Identity, IdentityClass
 from app.db import ApprovalRow, make_engine
 from app.errors import ErrorCode, FirewallError
+from app.policy import load_policy
 from app.providers.mock import MockProvider
+
+_POLICY = load_policy("policies/default_policy.yaml")
 
 
 @pytest.fixture
@@ -165,6 +168,8 @@ def test_resume_denies_when_material_arguments_changed_apr013(engine: Any) -> No
             creation.approval.id,
             provider=MockProvider(),
             retain_response_content=False,
+            policy=_POLICY,
+            salt="test-salt",
         )
     )
     assert outcome == ResumeOutcome.DENIED_ARGUMENTS_CHANGED
@@ -198,7 +203,12 @@ def test_resume_completes_when_arguments_are_unchanged(engine: Any) -> None:
     )
     outcome = asyncio.run(
         resume_approved(
-            engine, creation.approval.id, provider=MockProvider(), retain_response_content=False
+            engine,
+            creation.approval.id,
+            provider=MockProvider(),
+            retain_response_content=False,
+            policy=_POLICY,
+            salt="test-salt",
         )
     )
     assert outcome == ResumeOutcome.COMPLETED
@@ -250,7 +260,12 @@ def test_resume_claims_exactly_once_under_concurrent_attempts_apr011(engine: Any
         return await asyncio.gather(
             *[
                 resume_approved(
-                    engine, creation.approval.id, provider=provider, retain_response_content=False
+                    engine,
+                    creation.approval.id,
+                    provider=provider,
+                    retain_response_content=False,
+                    policy=_POLICY,
+                    salt="test-salt",
                 )
                 for _ in range(20)
             ]

@@ -248,6 +248,66 @@ def evaluate_policy(
     )
 
 
+def combine_decisions(decisions: tuple[Decision, ...]) -> Decision:
+    """Combine independent Decisions from separate evaluate_policy() calls
+    into one, using POL-002's precedence (DENY > NEED_APPROVAL > ALLOW).
+
+    Two Phase 3 (ADR 0005) callers, both genuinely independent evaluations
+    of the *same* transaction that need to be reduced to one reported
+    verdict:
+
+    - app/pipeline.py, once per declared tool candidate when a request's
+      `tools[]` names more than one (SPEC.md §6.5) — rather than rebuild
+      evaluate_policy() to accept a *list* of tool candidates internally,
+      it is called once per candidate (each call already correctly
+      evaluates every rule, including plain content-based ones, against
+      that one candidate's tool_name/tool_arguments).
+    - app/main.py, to merge the input-plane Decision with the output
+      guard's response-plane Decision (app/outputguard.py) into the one
+      overall verdict/transformation/reason_codes the API response reports
+      — SPEC.md's `OUTPUT_LEAKAGE` corpus case OUT-004 requires exactly
+      this: an inbound PII redaction and an outbound PII redaction, from
+      two separate evaluate_policy() calls, reported together.
+
+    When multiple decisions tie at the winning rank, their reason_codes are
+    unioned rather than one arbitrarily discarded. policy_hits keeps every
+    hit from every decision (POL-003: evidence isn't hidden by precedence),
+    deduplicated by rule_id.
+    """
+    if not decisions:
+        raise ValueError("combine_decisions requires at least one Decision")
+    if len(decisions) == 1:
+        return decisions[0]
+
+    best_rank = max(_VERDICT_RANK[d.verdict] for d in decisions)
+    winners = [d for d in decisions if _VERDICT_RANK[d.verdict] == best_rank]
+    verdict = winners[0].verdict
+
+    reason_codes = tuple(sorted({rc for d in winners for rc in d.reason_codes}))
+
+    seen_hits: dict[str, PolicyHit] = {}
+    for d in decisions:
+        for h in d.policy_hits:
+            seen_hits[h.rule_id] = h
+    policy_hits = tuple(seen_hits.values())
+
+    transformation = "NONE"
+    if verdict != "DENY":
+        applicable = {d.transformation for d in winners if d.transformation != "NONE"}
+        for t in _TRANSFORMATION_ORDER:
+            if t in applicable:
+                transformation = t
+
+    return Decision(
+        verdict=verdict,
+        transformation=transformation,
+        reason_codes=reason_codes,
+        policy_hits=policy_hits,
+        policy_version=decisions[0].policy_version,
+        degraded=any(d.degraded for d in decisions),
+    )
+
+
 def _reason_code_for_rule(policy: Policy, rule_id: str) -> str:
     for rule in policy.rules:
         if rule["id"] == rule_id:

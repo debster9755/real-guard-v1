@@ -7,10 +7,18 @@ guarded by an atomic `BEGIN IMMEDIATE` write (APR-004), self-approval
 refusal (APR-009), idempotent decisions (APR-010), exactly-once resume
 (APR-011), material-argument re-validation on resume (APR-013), and
 crash-recovery reconciliation (APR-014) — built and tested end to end,
-not a stub. Output-plane inspection of the resumed completion is not
-performed here (see ADR 0004 §5): that is Phase 3's output guard, which
-does not exist yet for the immediate-ALLOW path either, so both paths stay
-at the same, honestly-scoped maturity level.
+not a stub.
+
+Phase 3 (ADR 0005) fulfils the forward commitment ADR 0004 §5 made before
+the output guard existed: `resume_approved()` now runs
+`app/outputguard.run_output_guard()` — the exact same function
+app/main.py's immediate-ALLOW path calls — after its own upstream call and
+before completing (SYS-014: "An approved transaction is not exempt from
+egress inspection"). An output-guard DENY uses the `RESUMING -> DENIED`
+transition already present in `ALLOWED_TRANSITIONS` below (added in Phase 2
+for APR-013's ARGUMENTS_CHANGED case) — no new state-machine edge was
+needed, so the approval engine itself required no structural change to gain
+this, exactly as ADR 0004 §5 predicted.
 """
 
 from __future__ import annotations
@@ -36,6 +44,8 @@ from app.db import (
 from app.errors import ErrorCode, FirewallError
 from app.ids import new_id
 from app.materialargs import compute_material_args_hash
+from app.outputguard import run_output_guard, system_prompt_text_from_messages
+from app.policy import Policy
 from app.providers.base import Provider
 
 _GENESIS_HASH = "sha256:" + hashlib.sha256(b"").hexdigest()
@@ -473,6 +483,7 @@ def decide_approval(
 class ResumeOutcome(StrEnum):
     COMPLETED = "completed"
     DENIED_ARGUMENTS_CHANGED = "denied_arguments_changed"
+    DENIED_OUTPUT_GUARD = "denied_output_guard"  # ADR 0005
     NOT_ELIGIBLE = "not_eligible"  # already resumed/expired/etc — safe no-op
 
 
@@ -482,6 +493,9 @@ async def resume_approved(
     *,
     provider: Provider,
     retain_response_content: bool,
+    policy: Policy,
+    salt: str,
+    detector_timeout_ms: int = 250,
 ) -> ResumeOutcome:
     """APR-011: the APPROVED -> RESUMING claim is a single atomic
     conditional write; whichever caller wins the BEGIN IMMEDIATE lock is the
@@ -576,11 +590,80 @@ async def resume_approved(
 
     upstream_response = await provider.complete(transformed_payload)
 
+    # SYS-014 / ADR 0004 §5 / ADR 0005: the exact same output guard function
+    # app/main.py's immediate-ALLOW path calls, run here before COMPLETED —
+    # an approved transaction is not exempt from egress inspection. Outside
+    # the write lock, consistent with the upstream call itself.
+    resumed_messages = transformed_payload.get("messages", [])
+    choices = upstream_response.get("choices") or []
+    response_content = ""
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        if isinstance(message, dict):
+            response_content = message.get("content") or ""
+    guard_result = await run_output_guard(
+        response_content,
+        system_prompt_text_from_messages(resumed_messages),
+        policy,
+        salt=salt,
+        detector_timeout_ms=detector_timeout_ms,
+        upstream_response=upstream_response,
+    )
+
+    if guard_result.decision.verdict == "DENY":
+        with immediate_transaction(engine) as session:
+            approval = session.get(ApprovalRow, approval_id)
+            assert approval is not None
+            _transition(approval, "DENIED")
+            session.add(approval)
+            session.add(
+                ApprovalDecisionRow(
+                    id=new_id("dec"),
+                    approval_id=approval_id,
+                    decision="DENY",
+                    reviewer_id="system",
+                    note="OUTPUT_GUARD_DENIED",
+                    idempotency_key=new_id("idm"),
+                    from_state="RESUMING",
+                    to_state="DENIED",
+                    created_at=_now(),
+                )
+            )
+            txn = session.get(TransactionRow, transaction_id)
+            if txn is not None:
+                txn.status = "DENIED"
+                session.add(txn)
+            _audit(
+                session,
+                approval_id=approval_id,
+                transaction_id=transaction_id,
+                correlation_id=transaction_id,
+                event_type="RESUME_OUTPUT_GUARD_DENIED",
+                actor_type="system",
+                actor_id="resume_worker",
+                payload={
+                    "from_state": "RESUMING",
+                    "to_state": "DENIED",
+                    "reason_codes": list(guard_result.decision.reason_codes),
+                },
+            )
+        return ResumeOutcome.DENIED_OUTPUT_GUARD
+
+    # ALLOW (optionally REDACT-transformed): replace the response's content
+    # with the output guard's sanitized version before it is ever persisted
+    # or delivered — TRN-006/API-009's "never echo the offending value"
+    # applies to the stored completion_result too, not only the wire body.
+    sanitized_response = json.loads(json.dumps(upstream_response))  # cheap deep copy
+    if choices and isinstance(sanitized_response.get("choices", [None])[0], dict):
+        message = sanitized_response["choices"][0].get("message")
+        if isinstance(message, dict) and "content" in message:
+            message["content"] = guard_result.sanitized_content
+
     with immediate_transaction(engine) as session:
         approval = session.get(ApprovalRow, approval_id)
         assert approval is not None
         _transition(approval, "COMPLETED")
-        approval.completion_result = upstream_response
+        approval.completion_result = sanitized_response
         session.add(approval)
         txn = session.get(TransactionRow, transaction_id)
         completed_at = _now()
@@ -588,7 +671,7 @@ async def resume_approved(
             txn.status = "COMPLETED"
             txn.completed_at = completed_at
             if retain_response_content:
-                txn.response_content = upstream_response
+                txn.response_content = sanitized_response
             session.add(txn)
         _audit(
             session,
@@ -598,7 +681,11 @@ async def resume_approved(
             event_type="RESUME_COMPLETED",
             actor_type="system",
             actor_id="resume_worker",
-            payload={"from_state": "RESUMING", "to_state": "COMPLETED"},
+            payload={
+                "from_state": "RESUMING",
+                "to_state": "COMPLETED",
+                "output_transformation": guard_result.decision.transformation,
+            },
         )
     return ResumeOutcome.COMPLETED
 
