@@ -1,0 +1,269 @@
+/* real-guard-v1 reviewer dashboard styles.
+ * SPEC.md §2.19: the dashboard MUST NOT load assets from a third-party CDN.
+ * This file is served same-origin from /dashboard/static/ alongside the
+ * vendored HTMX build — no external stylesheet, font or icon request is
+ * made anywhere in this page (see docs/adr/0006 for the full accounting).
+ * No <style> tag in any template is inline: SEC-008's CSP
+ * (`default-src 'self'`, no `unsafe-inline`) would refuse an inline one.
+ */
+
+:root {
+  color-scheme: light dark;
+  --rg-bg: #f7f7f8;
+  --rg-surface: #ffffff;
+  --rg-border: #d8dadf;
+  --rg-text: #1c1e21;
+  --rg-muted: #5b6068;
+  --rg-accent: #2454ff;
+  --rg-danger: #c4283c;
+  --rg-danger-bg: #fdecef;
+  --rg-warn-bg: #fff6e0;
+  --rg-warn-border: #e0b73b;
+  --rg-ok-bg: #e8f6ee;
+  --rg-ok-text: #146c3f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --rg-bg: #16171a;
+    --rg-surface: #1f2125;
+    --rg-border: #34363b;
+    --rg-text: #ecedee;
+    --rg-muted: #a2a7ae;
+    --rg-accent: #6f92ff;
+    --rg-danger: #ff6b7f;
+    --rg-danger-bg: #3a1c22;
+    --rg-warn-bg: #332a10;
+    --rg-warn-border: #8a6d1f;
+    --rg-ok-bg: #123424;
+    --rg-ok-text: #6fd8a3;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--rg-bg);
+  color: var(--rg-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.rg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.5rem;
+  background: var(--rg-surface);
+  border-bottom: 1px solid var(--rg-border);
+}
+
+.rg-header h1 {
+  font-size: 1.05rem;
+  margin: 0;
+  font-weight: 600;
+}
+
+.rg-mode-banner {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  background: var(--rg-warn-bg);
+  border: 1px solid var(--rg-warn-border);
+  color: #8a6d1f;
+}
+
+.rg-main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.rg-card {
+  background: var(--rg-surface);
+  border: 1px solid var(--rg-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.rg-login-card {
+  max-width: 420px;
+  margin: 4rem auto;
+}
+
+.rg-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.rg-toolbar-title {
+  margin: 0;
+}
+
+.rg-filter-form {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.rg-filter-label {
+  font-size: 0.8rem;
+  color: var(--rg-muted);
+}
+
+.rg-field label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--rg-muted);
+  margin-bottom: 0.3rem;
+}
+
+.rg-field input[type="password"],
+.rg-field input[type="text"] {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--rg-border);
+  border-radius: 6px;
+  background: var(--rg-bg);
+  color: var(--rg-text);
+  font-size: 0.95rem;
+}
+
+.rg-button {
+  display: inline-block;
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rg-button-primary {
+  background: var(--rg-accent);
+  color: #fff;
+}
+
+.rg-button-approve {
+  background: var(--rg-ok-text);
+  color: #fff;
+}
+
+.rg-button-deny {
+  background: var(--rg-danger);
+  color: #fff;
+}
+
+.rg-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rg-error {
+  color: var(--rg-danger);
+  background: var(--rg-danger-bg);
+  border: 1px solid var(--rg-danger);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.rg-empty {
+  color: var(--rg-muted);
+  font-style: italic;
+}
+
+.rg-approval-row {
+  border: 1px solid var(--rg-border);
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.8rem;
+}
+
+.rg-approval-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--rg-muted);
+  margin-bottom: 0.5rem;
+}
+
+.rg-badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: 1px solid var(--rg-border);
+}
+
+.rg-badge-risk-CRITICAL, .rg-badge-risk-HIGH { color: var(--rg-danger); border-color: var(--rg-danger); }
+.rg-badge-risk-MEDIUM { color: #8a6d1f; border-color: var(--rg-warn-border); }
+.rg-badge-risk-LOW, .rg-badge-risk-NONE { color: var(--rg-ok-text); border-color: var(--rg-ok-text); }
+
+.rg-preview {
+  background: var(--rg-bg);
+  border: 1px solid var(--rg-border);
+  border-radius: 6px;
+  padding: 0.6rem 0.7rem;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 8rem;
+  overflow-y: auto;
+  margin-bottom: 0.6rem;
+}
+
+.rg-decide-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.rg-decide-form input[type="text"] {
+  flex: 1 1 220px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--rg-border);
+  border-radius: 6px;
+  background: var(--rg-bg);
+  color: var(--rg-text);
+  font-size: 0.85rem;
+}
+
+.rg-decide-status {
+  font-size: 0.82rem;
+  margin-top: 0.4rem;
+}
+
+.rg-decision-history li {
+  font-size: 0.82rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--rg-border);
+}
+
+.rg-decision-history li:last-child { border-bottom: none; }
+
+.rg-readonly-note {
+  font-size: 0.78rem;
+  color: var(--rg-muted);
+  margin-bottom: 0.75rem;
+}
+
+.rg-footer {
+  text-align: center;
+  color: var(--rg-muted);
+  font-size: 0.75rem;
+  padding: 1.5rem;
+}

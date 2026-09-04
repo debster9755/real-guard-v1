@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Approval queue — real-guard-v1 dashboard{% endblock %}
+{% block content %}
+
+<div class="rg-card">
+  <div class="rg-toolbar">
+    <h2 class="rg-toolbar-title">Pending approvals</h2>
+    <form method="get" action="/dashboard" class="rg-filter-form">
+      <label for="status" class="rg-filter-label">Status</label>
+      <select id="status" name="status">
+        {% for opt in ["PENDING", "APPROVED", "DENIED", "EXPIRED", "COMPLETED"] %}
+        <option value="{{ opt }}" {% if opt == status_filter %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+      </select>
+      <button class="rg-button" type="submit">Filter</button>
+    </form>
+  </div>
+
+  {% if readonly %}
+  <p class="rg-readonly-note" data-testid="readonly-note">Signed in with a reviewer bearer key — read-only view. Sign in at <a href="/dashboard/login">/dashboard/login</a> for interactive approve/deny (session + CSRF required, SEC-007).</p>
+  {% endif %}
+
+  {% if not items %}
+  <p class="rg-empty">No approvals in status {{ status_filter }}.</p>
+  {% endif %}
+
+  {% for item in items %}
+  <div class="rg-approval-row" id="row-{{ item.approval_id }}" data-testid="approval-row">
+    <div class="rg-approval-row-meta">
+      <span class="rg-badge rg-badge-risk-{{ item.risk_level }}">{{ item.risk_level }}</span>
+      <span>{{ item.status }}</span>
+      <span>reason: {{ item.reason_codes | join(", ") }}</span>
+      <span>policy: {{ item.policy_hits | join(", ") }}</span>
+      <span>expires {{ item.expires_at }}</span>
+      <span>{{ item.approval_id }}</span>
+    </div>
+    {# APR-012 / SPEC.md §2.19: this is `preview_content` exactly as
+       app/approvals.py stored it at creation time — already transformed
+       (REDACT applied) before the row was ever written. The dashboard
+       renders it verbatim and never re-reads the untransformed request. #}
+    <div class="rg-preview" data-testid="approval-preview">{{ item.preview_json }}</div>
+
+    {% if readonly %}
+      <p class="rg-readonly-note">Read-only — sign in for approve/deny.</p>
+    {% elif item.status == "PENDING" %}
+      <form class="rg-decide-form" id="form-{{ item.approval_id }}">
+        <input type="text" name="note" placeholder="Note (required to deny)">
+        <button class="rg-button rg-button-approve" type="button" data-testid="approve-button"
+          hx-post="/dashboard/approvals/{{ item.approval_id }}/decide"
+          hx-ext="json-enc"
+          hx-include="closest form"
+          hx-vals='{"decision": "APPROVE"}'
+          hx-headers='{"X-CSRF-Token": "{{ csrf_token }}", "Idempotency-Key": "{{ item.dashboard_idempotency_key }}-approve"}'
+          hx-target="#row-{{ item.approval_id }}"
+          hx-swap="outerHTML">Approve</button>
+        <button class="rg-button rg-button-deny" type="button" data-testid="deny-button"
+          hx-post="/dashboard/approvals/{{ item.approval_id }}/decide"
+          hx-ext="json-enc"
+          hx-include="closest form"
+          hx-vals='{"decision": "DENY"}'
+          hx-headers='{"X-CSRF-Token": "{{ csrf_token }}", "Idempotency-Key": "{{ item.dashboard_idempotency_key }}-deny"}'
+          hx-target="#row-{{ item.approval_id }}"
+          hx-swap="outerHTML">Deny</button>
+      </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="rg-card">
+  <h2>Recent decisions</h2>
+  {% if not recent_decisions %}
+  <p class="rg-empty">No decisions recorded yet.</p>
+  {% else %}
+  <ul class="rg-decision-history">
+    {% for d in recent_decisions %}
+    <li>{{ d.created_at }} &mdash; <strong>{{ d.decision }}</strong> by {{ d.reviewer_id }} on {{ d.approval_id }}{% if d.note %} &mdash; "{{ d.note }}"{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+{% endblock %}

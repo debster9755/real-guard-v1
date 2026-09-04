@@ -284,6 +284,87 @@ def list_approvals(
     return page, next_cursor
 
 
+@dataclass(frozen=True)
+class DecideAndResumeResult:
+    outcome: DecisionOutcome
+    decision_row: ApprovalDecisionRow
+    final_approval: ApprovalRow
+
+
+async def decide_and_resume(
+    engine: Engine,
+    approval_id: str,
+    *,
+    decision: str,
+    note: str | None,
+    reviewer_identity: Identity,
+    idempotency_key: str,
+    correlation_id: str,
+    provider: Provider,
+    policy: Policy | None,
+    salt: str,
+    detector_timeout_ms: int,
+    retain_response_content: bool,
+) -> DecideAndResumeResult:
+    """The orchestration `POST /v1/firewall/approvals/{id}/decision`
+    (`app/main.py`) and the dashboard's own decision route
+    (`app/dashboard.py`, Phase 4/ADR 0006) both need: sweep expiry, record
+    the decision, and — APR-011 — resume inline in the same request when
+    the decision just moved an approval to APPROVED. Factored out here
+    (rather than duplicated in two HTTP handlers) so there is exactly one
+    place this sequencing can be gotten wrong, per this project's standing
+    "one function decides" preference (see ADR 0005 §4 for the same
+    reasoning applied to `combine_decisions()`).
+    """
+    sweep_expired(engine)
+    result = decide_approval(
+        engine,
+        approval_id,
+        decision=decision,
+        note=note,
+        reviewer_identity=reviewer_identity,
+        idempotency_key=idempotency_key,
+        correlation_id=correlation_id,
+    )
+    if result.outcome == DecisionOutcome.APPLIED and result.approval.state == "APPROVED":
+        # POL-009: the same "no cached policy -> 503" guard the gateway
+        # applies before every input-pipeline evaluation.
+        if policy is None:
+            raise FirewallError(
+                ErrorCode.POLICY_UNAVAILABLE,
+                "The policy engine is unavailable and no cached policy exists.",
+            )
+        await resume_approved(
+            engine,
+            approval_id,
+            provider=provider,
+            retain_response_content=retain_response_content,
+            policy=policy,
+            salt=salt,
+            detector_timeout_ms=detector_timeout_ms,
+        )
+    final = get_approval(engine, approval_id)
+    assert final is not None  # decide_approval() already proved this row exists
+    return DecideAndResumeResult(
+        outcome=result.outcome, decision_row=result.decision_row, final_approval=final
+    )
+
+
+def list_recent_decisions(engine: Engine, *, limit: int = 20) -> list[ApprovalDecisionRow]:
+    """Phase 4 (WS-11): the dashboard's decision-history panel. Read-only,
+    reuses `ApprovalDecisionRow` (DAT-004: append-only) rather than
+    introducing a parallel query path — the same rows
+    `decide_approval()`/`app/main.py`'s decision endpoint already write."""
+    with Session(engine) as session:
+        rows = (
+            session.query(ApprovalDecisionRow)
+            .order_by(ApprovalDecisionRow.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return list(rows)
+
+
 # ---------------------------------------------------------------------------
 # Expiry (APR-006, APR-007, APR-008)
 # ---------------------------------------------------------------------------

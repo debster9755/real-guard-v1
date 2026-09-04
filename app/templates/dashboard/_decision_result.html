@@ -1,0 +1,16 @@
+{# HTMX swap-target fragment: the response body app/dashboard.py's own
+   `POST /dashboard/approvals/{id}/decide` route always returns (there is no
+   content negotiation on that route — it is used only by this dashboard's
+   vendored htmx, never by a documented JSON API caller). The canonical
+   `POST /v1/firewall/approvals/{id}/decision` in app/main.py is a separate
+   route and is unaffected by this template — it always returns JSON. See
+   docs/adr/0006 for why the two routes exist.
+   No <html>/<head> here on purpose: this is an out-of-band-free partial,
+   swapped directly into #row-{approval_id} via hx-swap="outerHTML". #}
+<div class="rg-approval-row" id="row-{{ approval_id }}" data-testid="approval-row">
+  {% if error %}
+  <div class="rg-error" data-testid="decision-error">{{ error }}</div>
+  {% else %}
+  <p class="rg-decide-status" data-testid="decision-status">Recorded: <strong>{{ decision }}</strong> &mdash; approval is now <strong>{{ status }}</strong> ({{ decided_at }}).</p>
+  {% endif %}
+</div>

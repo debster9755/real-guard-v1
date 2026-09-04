@@ -10,7 +10,7 @@ downstream tool.
 
 This repository is being built phase by phase against [`PLAN.md`](PLAN.md)
 (build sequence) and [`SPEC.md`](SPEC.md) (normative contract). As of this
-writing: **Phases 0–3 are complete.** Phases 0–2 froze the contracts, built
+writing: **Phases 0–4 are complete.** Phases 0–2 froze the contracts, built
 the gateway skeleton, and shipped full input-plane inspection (prompt
 injection, jailbreak, indirect injection, encoded payloads, inbound PII and
 secrets) with policy-driven `ALLOW`/`DENY` decisions and `REDACT`
@@ -24,11 +24,17 @@ before the client sees it), and **tool-call inspection** (allowlist,
 high-value-transfer, destructive-SQL and destructive-shell rules against
 parsed `tools[]`/`tool_calls[]`) — see
 [`docs/adr/0005-phase3-output-guard-and-tool-call-inspection.md`](docs/adr/0005-phase3-output-guard-and-tool-call-inspection.md)
-for the full account. All 54 golden-corpus cases now pass end to end.
+for the full account. All 54 golden-corpus cases now pass end to end. Phase
+4 adds session-cookie authentication for reviewers (SEC-005), CSRF
+protection on every state-changing dashboard request (SEC-007), the four
+mandatory security headers system-wide (SEC-008), and a server-rendered
+**reviewer dashboard** at `/dashboard` — login, queue, approve/deny,
+decision history — with no third-party CDN dependency, see
+[`docs/adr/0006-reviewer-dashboard-session-auth-and-csrf.md`](docs/adr/0006-reviewer-dashboard-session-auth-and-csrf.md).
 
 This README does not yet follow `SPEC.md` §18's full documentation
-structure (it has no Docker quick start, no dashboard walkthrough, no
-measured-latency table — those depend on work later phases add). What is
+structure (it has no Docker quick start, no measured-latency table, no
+audit/metrics section — those depend on work later phases add). What is
 below is accurate to what exists and has been run today; nothing here is
 aspirational.
 
@@ -428,13 +434,159 @@ field ever appears:
 {"transaction_id": "txn_01M1M5BBZ761PJ16V3W2Z8H94Q", "status": "DENIED"}
 ```
 
+## Reviewer dashboard (Phase 4)
+
+A server-rendered HTML dashboard at `/dashboard` lets a reviewer log in
+with a reviewer key, see the pending-approval queue with a status filter,
+and approve or deny inline — no build step, no JavaScript framework, no
+third-party CDN (HTMX and a small `json-enc` extension are vendored under
+`app/static/vendor/`; see
+[`docs/adr/0006-reviewer-dashboard-session-auth-and-csrf.md`](docs/adr/0006-reviewer-dashboard-session-auth-and-csrf.md)
+for the full design). Everything below was captured from a real `uvicorn`
+process driven with `curl` — no step is simulated.
+
+Start the server the same way as the Quick start section, with both key
+sets configured:
+
+```bash
+export FIREWALL_API_KEYS=svc_manual_test_key_0123456789abcdef0123
+export FIREWALL_REVIEWER_KEYS=rev_manual_test_key_0123456789abcdef0123
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+**1. A service identity creates a `NEED_APPROVAL` request**, exactly as in
+the Approval workflow section above:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Authorization: Bearer $FIREWALL_API_KEYS" -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Based on these symptoms, can you give me a specific medical diagnosis?"}]}'
+```
+
+```json
+{"decision": "NEED_APPROVAL", "risk_level": "CRITICAL", "reason_codes": ["SENSITIVE_TOPIC"],
+ "policy_hits": ["review_sensitive_topic"], "transformation": "REDACT",
+ "approval_id": "apr_01M1NCRXN82R0R3T4EA1441TC3", "request_id": "req_01M1NCRXN7EM43FFACTXFHW0GP",
+ "status": "PENDING"}
+```
+
+**2. A service key cannot sign in to the dashboard (SEC-006)** — a service
+identity gains nothing from the session-cookie route, exactly as it gains
+nothing from the bearer-key route (already covered in the Approval workflow
+section's scenario 4/5):
+
+```bash
+curl -si -X POST http://127.0.0.1:8000/dashboard/login \
+  --data-urlencode "reviewer_key=$FIREWALL_API_KEYS"
+```
+
+```
+HTTP/1.1 403 Forbidden
+...
+<div class="rg-error" data-testid="login-error">Service keys cannot sign in to the reviewer dashboard (SEC-006).</div>
+```
+
+**3. A reviewer key is exchanged for a signed session cookie (SEC-005)**:
+
+```bash
+curl -si -c cookies.txt -X POST http://127.0.0.1:8000/dashboard/login \
+  --data-urlencode "reviewer_key=$FIREWALL_REVIEWER_KEYS"
+```
+
+```
+HTTP/1.1 303 See Other
+location: /dashboard
+set-cookie: rg_session=ZGI4ZDI3Yj...30ad5b78...; HttpOnly; Max-Age=3600; Path=/dashboard; SameSite=strict
+```
+
+`HttpOnly`, `Path=/dashboard`, `SameSite=strict`, `Max-Age=3600`
+(`SESSION_TTL_SECONDS`'s default), and — correctly — no `Secure` attribute,
+because this server is running with `APP_ENV=development`. A live run with
+`APP_ENV=production` (and every other production precondition satisfied)
+adds `Secure`; asserted directly in
+`tests/test_dashboard.py::TestSessionCookieProductionAttributes`.
+
+**4. `GET /dashboard` with that cookie renders the queue and a CSRF token**:
+
+```bash
+curl -s -b cookies.txt http://127.0.0.1:8000/dashboard
+```
+
+The rendered page includes the pending item (risk badge, reason codes,
+policy hits, and the `preview_content` — REDACT-transformed, never raw —
+exactly as `app/approvals.list_approvals()` already returns it to the JSON
+`GET /v1/firewall/approvals` endpoint) and, inside its approve/deny
+buttons' `hx-headers` attribute, a session-bound CSRF token:
+`hx-headers='{"X-CSRF-Token": "d76bfa6a...16757036e", "Idempotency-Key": "..."}'`.
+
+**5. A decision request with no CSRF token is refused (SEC-007)**:
+
+```bash
+curl -si -b cookies.txt -X POST http://127.0.0.1:8000/dashboard/approvals/apr_01M1NCRXN82R0R3T4EA1441TC3/decide \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: manual-no-csrf-1' \
+  -d '{"decision":"APPROVE"}'
+```
+
+```
+HTTP/1.1 403 Forbidden
+<div class="rg-error" data-testid="decision-error">Missing or invalid CSRF token (SEC-007).</div>
+```
+
+The same request with a fabricated token gets the identical `403` — a
+mismatched token and a missing one are treated the same way.
+
+**6. The same request with the real token succeeds and resumes inline**:
+
+```bash
+curl -si -b cookies.txt -X POST http://127.0.0.1:8000/dashboard/approvals/apr_01M1NCRXN82R0R3T4EA1441TC3/decide \
+  -H 'Content-Type: application/json' -H 'X-CSRF-Token: d76bfa6a...16757036e' \
+  -H 'Idempotency-Key: manual-approve-1' \
+  -d '{"decision":"APPROVE","note":"Cleared with clinical lead."}'
+```
+
+```
+HTTP/1.1 200 OK
+<p class="rg-decide-status" data-testid="decision-status">Recorded: <strong>APPROVE</strong> &mdash; approval is now <strong>COMPLETED</strong> (2026-09-04T05:03:55Z).</p>
+```
+
+**7. The original caller's poll now returns the real completion** — the
+dashboard's decision route resumed through the exact same
+`app/approvals.decide_and_resume()` the canonical JSON endpoint uses:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/firewall/requests/req_01M1NCRXN7EM43FFACTXFHW0GP \
+  -H "Authorization: Bearer $FIREWALL_API_KEYS"
+```
+
+```json
+{"transaction_id": "txn_01M1NCRXN6VSW0TT3979BQ29BH", "status": "COMPLETED", "decision": "NEED_APPROVAL",
+ "response": {"object": "chat.completion", "choices": [{"message": {"content": "[mock response ...] Acknowledged your request."}}]}}
+```
+
+Every response above (JSON API and dashboard HTML alike) carries the
+SEC-008 headers: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer`, `Content-Security-Policy: default-src
+'self'` (no `unsafe-inline` — verified by reading every template and moving
+what used to be an inline `onchange` handler and inline `style` attributes
+into vendored CSS classes, since a real browser enforcing this header would
+silently drop both). `Strict-Transport-Security` is added only when
+`APP_ENV=production`.
+
+DEP-004's fourth required visible mock-mode marker (after the startup log,
+`/readyz`, and `X-RealGuard-Mode`) is the dashboard's own banner: every page
+served in mock mode shows `MOCK MODE — no UPSTREAM_BASE_URL configured` in
+the header (`data-testid="mock-mode-banner"`).
+
 ## API reference (additions since Phase 2)
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/v1/firewall/requests/{txn_id\|req_id}` | service (own) or reviewer (any) | Poll a transaction; `response` present once `COMPLETED` |
 | `GET` | `/v1/firewall/approvals` | reviewer | List approvals (`status`, `limit`, `cursor` query params); `preview` is transformed-only |
-| `POST` | `/v1/firewall/approvals/{id}/decision` | reviewer | `{"decision": "APPROVE"\|"DENY", "note"?, "reviewer_id"?}`; `Idempotency-Key` header required; `note` required (non-empty) for `DENY` |
+| `POST` | `/v1/firewall/approvals/{id}/decision` | reviewer bearer key, or reviewer session + `X-CSRF-Token` | `{"decision": "APPROVE"\|"DENY", "note"?, "reviewer_id"?}`; `Idempotency-Key` header required; `note` required (non-empty) for `DENY` |
+| `GET` | `/dashboard/login`, `POST` `/dashboard/login`, `POST` `/dashboard/logout` | none / reviewer bearer key | Reviewer session-cookie exchange (SEC-005); a service key is rejected (SEC-006) |
+| `GET` | `/dashboard` | reviewer session, or reviewer bearer key (read-only) | The queue and decision history — see "Reviewer dashboard" above |
+| `POST` | `/dashboard/approvals/{id}/decide` | reviewer session + `X-CSRF-Token` only | The dashboard's own CSRF-protected decision route (ADR 0006); calls the same `decide_and_resume()` as the canonical endpoint above |
 
 Auth: `Authorization: Bearer <key>`. No key configured and no header sent is
 accepted only in non-production, loopback-bound mode.
@@ -453,8 +605,8 @@ raw HTTP status) before trusting `.choices`.
 ruff check .            # lint
 ruff format --check .   # formatting
 mypy app                # strict type check
-pytest                  # 295 passed, 0 skipped, 0 failed as of this writing
-pytest --cov=app --cov-report=term-missing   # coverage — 90% line / 81.8% branch on app/ as of this writing
+pytest                  # 335 passed, 0 skipped, 0 failed as of this writing
+pytest --cov=app --cov-report=term-missing   # coverage — 90% line / 79.3% branch on app/ as of this writing
 python scripts/validate_contracts.py         # schema + corpus + OpenAPI consistency checks
 ```
 
@@ -462,7 +614,9 @@ python scripts/validate_contracts.py         # schema + corpus + OpenAPI consist
 specifies; `tests/test_golden_corpus.py` now runs every one of the 54 cases
 end to end — no case is skipped any more (Phase 3/ADR 0005 closed the last
 gap: the `OUTPUT_LEAKAGE`, `LEAK_OUTPUT` and `TOOL_ABUSE` buckets ADR 0003
-deferred).
+deferred). `tests/test_session.py` (17 tests) and `tests/test_dashboard.py`
+(25 tests, added this phase) cover session-cookie signing, CSRF, and the
+full dashboard HTTP surface end to end.
 
 ## Architecture documents
 
@@ -481,6 +635,14 @@ alongside upstream-provider safety controls and application-level
 authorization, not replace either. `system_prompt_leak`'s response-vs-system-
 prompt comparison is `difflib`-based text similarity, not semantics — a
 paraphrase that changes enough words can still fall below its threshold.
-The reviewer HTML dashboard, session-cookie authentication, the Ollama
-compose profile and preflight check, audit/metrics/rate-limiting, and every
-other Phase 4+ item in `PLAN.md` do not exist yet.
+The Ollama compose profile and preflight check (Phase 5), structured
+audit/metrics beyond the existing hash-chained `audit_events` rows, and
+rate limiting (Phase 6, WS-12/WS-13) do not exist yet — the `RATE_LIMIT_*`
+settings are validated at startup but nothing enforces them, and `GET
+/metrics` is not implemented. `CONTENT_RETENTION=encrypted` has no storage
+backend (`encrypted_payloads`) yet. The reviewer dashboard has no automated
+test that renders it in a real browser with CSP enforcement turned on —
+Phase 4 found and fixed one class of defect (inline event-handler/style
+attributes silently broken by the CSP header this system sends) by reading
+the templates against the header's real semantics, not by a passing test;
+that class of defect is not mechanically caught by anything in this repo.

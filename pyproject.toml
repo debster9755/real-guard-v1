@@ -16,6 +16,7 @@ dependencies = [
     "sqlalchemy>=2.0,<3.0",
     "alembic>=1.13,<2.0",
     "jinja2>=3.1,<4.0",
+    "python-multipart>=0.0.9,<1.0",  # Phase 4: Starlette Request.form() for the dashboard login POST
     "prometheus-client>=0.21,<1.0",
     "structlog>=24.4,<25.0",
 ]
@@ -41,6 +42,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+# WS-11: templates and vendored dashboard assets (no CDN — SPEC.md §2.19)
+# must ship inside the installed package, not just the source checkout.
+app = ["templates/dashboard/*.html", "static/*.css", "static/vendor/*"]
 
 # --- Ruff ------------------------------------------------------------------
 [tool.ruff]

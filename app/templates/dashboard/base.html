@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}real-guard-v1 reviewer dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+  {# SPEC.md §2.19: no third-party CDN — both files below are vendored
+     under app/static/vendor/ and served same-origin. #}
+  <script src="/dashboard/static/vendor/htmx.min.js"></script>
+  <script src="/dashboard/static/vendor/htmx-json-enc.js"></script>
+</head>
+<body>
+  <header class="rg-header">
+    <h1>real-guard-v1 &middot; reviewer dashboard</h1>
+    {% if mock_mode %}
+    {# DEP-004: mock mode's 4th mandatory visible marker — startup log,
+       /readyz and X-RealGuard-Mode are the other three (app/main.py). #}
+    <span class="rg-mode-banner" data-testid="mock-mode-banner">MOCK MODE — no UPSTREAM_BASE_URL configured</span>
+    {% endif %}
+  </header>
+  <main class="rg-main">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="rg-footer">real-guard-v1 &mdash; SPEC.md §2.19 reviewer dashboard. Detection is heuristic; this is one layer of defence in depth.</footer>
+</body>
+</html>

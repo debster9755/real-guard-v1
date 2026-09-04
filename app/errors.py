@@ -33,6 +33,14 @@ class ErrorCode(StrEnum):
     SELF_APPROVAL_FORBIDDEN = "SELF_APPROVAL_FORBIDDEN"
     INVALID_APPROVAL_STATE = "INVALID_APPROVAL_STATE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    # Phase 4 / ADR 0006: SEC-007 — "a missing or mismatched [CSRF] token
+    # MUST return 403." Not one of SPEC.md §16's original 21 codes (the
+    # session-cookie/CSRF auth route those codes were enumerated against
+    # did not exist yet); added as a distinct code rather than overloading
+    # INSUFFICIENT_PRIVILEGE, since the failure mode (a stale or forged
+    # form, not a wrong identity) is genuinely different and a caller
+    # scripting against the dashboard benefits from telling them apart.
+    CSRF_TOKEN_INVALID = "CSRF_TOKEN_INVALID"  # noqa: S105 — an error code, not a credential
 
 
 # ERR-002 .. ERR-021: (code, default HTTP status, error `type`).
@@ -58,6 +66,7 @@ ERROR_STATUS: dict[ErrorCode, int] = {
     ErrorCode.SELF_APPROVAL_FORBIDDEN: 403,
     ErrorCode.INVALID_APPROVAL_STATE: 409,
     ErrorCode.INTERNAL_ERROR: 500,
+    ErrorCode.CSRF_TOKEN_INVALID: 403,
 }
 
 ERROR_TYPE: dict[ErrorCode, str] = {
@@ -81,6 +90,7 @@ ERROR_TYPE: dict[ErrorCode, str] = {
     ErrorCode.SELF_APPROVAL_FORBIDDEN: "authorization_error",
     ErrorCode.INVALID_APPROVAL_STATE: "conflict",
     ErrorCode.INTERNAL_ERROR: "internal_error",
+    ErrorCode.CSRF_TOKEN_INVALID: "authorization_error",
 }
 
 

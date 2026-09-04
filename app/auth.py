@@ -1,12 +1,13 @@
 """Authentication and identity resolution. SPEC.md §11 (SEC-001, SEC-002,
-SEC-006, SEC-009).
+SEC-005, SEC-006, SEC-007, SEC-009).
 
-ADR 0004 scope: bearer-key authentication only. The alternate reviewer
-session-cookie route (SEC-005, SEC-007 — the `/dashboard` login exchange and
-CSRF) belongs to the reviewer-dashboard workstream (WS-10) and is deferred;
-`POST /v1/firewall/approvals/{id}/decision` accepts `Authorization: Bearer
-<reviewer key>` in this slice, exactly as SPEC.md §4.6 allows as one of its
-two valid auth routes.
+ADR 0004 scope: bearer-key authentication only. Phase 4 (ADR 0006) adds the
+second valid auth route SPEC.md §4.6 always named but ADR 0004 deferred: "a
+valid session cookie plus `X-CSRF-Token`" — `resolve_decision_identity()`
+below is the single entry point `POST
+/v1/firewall/approvals/{id}/decision` uses for both routes, so the
+CSRF-enforcement rule (SEC-007) lives in exactly one place regardless of
+which auth route a given request took.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from enum import StrEnum
 
 from app.config import Settings
 from app.errors import ErrorCode, FirewallError
+from app.session import verify_csrf_token, verify_session_cookie
 
 ANONYMOUS_DEV_IDENTITY = "svc_anonymous_dev"
 
@@ -81,6 +83,52 @@ def resolve_identity(authorization_header: str | None, settings: Settings) -> Id
         return Identity(IdentityClass.REVIEWER, key_id_for(token))
 
     raise FirewallError(ErrorCode.INVALID_AUTHENTICATION, "Unrecognized API key.")
+
+
+def resolve_decision_identity(
+    *,
+    authorization_header: str | None,
+    session_cookie: str | None,
+    csrf_header: str | None,
+    settings: Settings,
+) -> Identity:
+    """SPEC.md §4.6: "Headers: `Authorization: Bearer <reviewer key>` or a
+    valid session cookie plus `X-CSRF-Token`." A bearer header, when
+    present, is resolved exactly as `resolve_identity()` already did before
+    this function existed — every prior bearer-only test keeps behaving
+    identically. Only when no `Authorization` header is present is the
+    session cookie consulted.
+
+    SEC-007: cookie-based auth additionally requires a matching
+    `X-CSRF-Token`; a missing or mismatched token raises `CSRF_TOKEN_INVALID`
+    (403) before the caller ever reaches the state-changing logic. Bearer-key
+    auth is exempt — a browser cannot be tricked into attaching an
+    `Authorization` header to a forged cross-site request the way it
+    automatically attaches cookies, so CSRF does not apply to that route.
+
+    SEC-006: a session is only ever *issued* to a reviewer identity (see
+    `app/dashboard.py`'s login route, which calls `resolve_identity()` and
+    rejects anything but `IdentityClass.REVIEWER` before a cookie is ever
+    created) — there is no "service session" for this function to decode,
+    so SEC-006 is enforced at issuance rather than here. `require_reviewer()`
+    is still called by every caller of this function as belt-and-braces.
+    """
+    if authorization_header is not None:
+        return resolve_identity(authorization_header, settings)
+
+    session = verify_session_cookie(session_cookie, settings)
+    if session is not None:
+        if not verify_csrf_token(csrf_header, session.session_id, settings):
+            raise FirewallError(
+                ErrorCode.CSRF_TOKEN_INVALID,
+                "Missing or invalid X-CSRF-Token for this session.",
+            )
+        return Identity(IdentityClass.REVIEWER, session.identity_id)
+
+    # No usable credential of either kind: fall back to resolve_identity()'s
+    # existing logic, which raises INVALID_AUTHENTICATION or returns the
+    # anonymous dev identity under SEC-003's conditions.
+    return resolve_identity(authorization_header, settings)
 
 
 def require_reviewer(identity: Identity) -> None:

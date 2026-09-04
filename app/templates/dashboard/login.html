@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Sign in — real-guard-v1 dashboard{% endblock %}
+{% block content %}
+<div class="rg-card rg-login-card">
+  <h2>Reviewer sign in</h2>
+  <p class="rg-readonly-note">Paste a reviewer key (<code>FIREWALL_REVIEWER_KEYS</code>). A service key is rejected here (SEC-006).</p>
+  {% if error %}
+  <div class="rg-error" data-testid="login-error">{{ error }}</div>
+  {% endif %}
+  <form method="post" action="/dashboard/login">
+    <div class="rg-field">
+      <label for="reviewer_key">Reviewer key</label>
+      <input type="password" id="reviewer_key" name="reviewer_key" autocomplete="off" required>
+    </div>
+    <p><button class="rg-button rg-button-primary" type="submit">Sign in</button></p>
+  </form>
+</div>
+{% endblock %}

@@ -35,19 +35,17 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.approvals import (
-    DecisionOutcome,
     create_approval,
-    decide_approval,
-    get_approval,
+    decide_and_resume,
     get_approval_by_transaction,
     get_transaction,
     list_approvals,
     reconcile_resuming_on_startup,
-    resume_approved,
     sweep_expired,
 )
-from app.auth import IdentityClass, require_reviewer, resolve_identity
+from app.auth import IdentityClass, require_reviewer, resolve_decision_identity, resolve_identity
 from app.config import Settings, load_settings
+from app.dashboard import register_dashboard_routes
 from app.db import make_engine
 from app.decision import combine_decisions
 from app.detectors.base import Detector, Finding
@@ -80,6 +78,7 @@ from app.schemas import (
     ReadyzResponse,
     TransactionStatusResponse,
 )
+from app.session import SESSION_COOKIE_NAME
 from app.transform import TransformationError, apply_transformation_to_messages
 
 logger = logging.getLogger("realguard")
@@ -194,9 +193,11 @@ def create_app() -> FastAPI:
 
     app.add_middleware(CorrelationIdMiddleware)
     app.add_middleware(RequestSizeLimitMiddleware, settings=state.settings)
+    app.add_middleware(SecurityHeadersMiddleware, settings=state.settings)
 
     register_exception_handlers(app)
     register_routes(app)
+    register_dashboard_routes(app)
     return app
 
 
@@ -251,6 +252,44 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
 
                 request._receive = _receive  # noqa: SLF001 — Starlette's documented re-inject pattern
         return await call_next(request)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """SEC-008. Applied to every response, system-wide, not scoped to
+    `/dashboard*` alone.
+
+    SPEC.md §11.4 states SEC-008 without a "for the dashboard" qualifier
+    (contrast §2.19, which *does* scope its own three prohibitions
+    explicitly to the dashboard component) — read as written, SEC-008 is a
+    system-wide requirement, and PLAN.md principle 8 ("fail-safe production
+    defaults... unsafe configuration fails at startup, not at request
+    time") tie-breaks toward the broader, safer reading wherever SPEC.md is
+    ambiguous. Applying it as global middleware also means it literally
+    cannot be forgotten on a future route the way a per-router opt-in could
+    be. The JSON API surface gains these headers as a harmless side effect
+    (a JSON response was never at risk of being framed or MIME-sniffed as
+    HTML, but there is no cost to sending the header anyway).
+    """
+
+    def __init__(self, app: Any, *, settings: Settings) -> None:
+        super().__init__(app)
+        self._is_production = settings.APP_ENV.value == "production"
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        # SEC-008: `default-src 'self'`, no `unsafe-inline` — every template
+        # in app/templates/dashboard/ loads CSS/JS from same-origin
+        # /dashboard/static/ files only (app/dashboard.py, ADR 0006); no
+        # inline <script> or <style> exists anywhere in this codebase.
+        response.headers["Content-Security-Policy"] = "default-src 'self'"
+        if self._is_production:
+            response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        return response
 
 
 def _payload_too_large_response(request: Request) -> JSONResponse:
@@ -718,9 +757,32 @@ def register_routes(app: FastAPI) -> None:
     ) -> Response:
         """SPEC.md §4.6. API-012: reviewer-only, Idempotency-Key required,
         non-empty note required for DENY, self-approval forbidden (APR-009),
-        replay/conflict handling (APR-010)."""
+        replay/conflict handling (APR-010).
+
+        Phase 4 (ADR 0006): identity resolution now accepts either of
+        SPEC.md §4.6's two named auth routes — `Authorization: Bearer
+        <reviewer key>`, or a valid session cookie plus `X-CSRF-Token`
+        (SEC-005/SEC-007) — via `resolve_decision_identity()`, which raises
+        `CSRF_TOKEN_INVALID` (403) for a missing/mismatched token on the
+        cookie route. In *practice* a real browser never presents this
+        endpoint with the SEC-005 cookie automatically, because that
+        cookie's `Path=/dashboard` scope means it is only ever attached to
+        requests under `/dashboard` — this endpoint's cookie support exists
+        for literal SPEC.md §4.6 fidelity and for any client that presents
+        the cookie value explicitly (not from a browser's automatic cookie
+        jar). The dashboard's own approve/deny buttons instead call
+        `POST /dashboard/approvals/{id}/decide` (app/dashboard.py), which
+        the session cookie *does* reach — see docs/adr/0006 for the full
+        reasoning and the concrete proof (a curl-cookie-jar Path test) that
+        led to that split.
+        """
         state: AppState = app.state.rg
-        identity = resolve_identity(request.headers.get("Authorization"), state.settings)
+        identity = resolve_decision_identity(
+            authorization_header=request.headers.get("Authorization"),
+            session_cookie=request.cookies.get(SESSION_COOKIE_NAME),
+            csrf_header=request.headers.get("X-CSRF-Token"),
+            settings=state.settings,
+        )
         require_reviewer(identity)
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -730,8 +792,7 @@ def register_routes(app: FastAPI) -> None:
                 "The Idempotency-Key header is required for this endpoint (API-007).",
             )
 
-        sweep_expired(state.db_engine)
-        result = decide_approval(
+        result = await decide_and_resume(
             state.db_engine,
             approval_id,
             decision=body.decision,
@@ -739,39 +800,16 @@ def register_routes(app: FastAPI) -> None:
             reviewer_identity=identity,
             idempotency_key=idempotency_key,
             correlation_id=getattr(request.state, "correlation_id", approval_id),
+            provider=state.provider,
+            policy=state.policy,
+            salt=state.settings.effective_hash_salt(),
+            detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
+            retain_response_content=state.settings.CONTENT_RETENTION.value in ("full", "encrypted"),
         )
 
-        # APR-011: a newly-APPROVED approval is resumed inline, synchronously,
-        # right here — this MVP has no separate worker process, so "the
-        # resume worker" (SPEC.md §2.14) is this same request handling the
-        # atomic APPROVED->RESUMING claim itself. Concurrency safety comes
-        # from BEGIN IMMEDIATE (app/db.py), not from being a distinct process.
-        if result.outcome == DecisionOutcome.APPLIED and result.approval.state == "APPROVED":
-            # POL-009: same "no cached policy -> 503" guard the gateway
-            # applies before every input-pipeline evaluation — the output
-            # guard below needs a loaded policy exactly as much as the input
-            # pipeline does.
-            if state.policy is None:
-                raise FirewallError(
-                    ErrorCode.POLICY_UNAVAILABLE,
-                    "The policy engine is unavailable and no cached policy exists.",
-                )
-            retain_response = state.settings.CONTENT_RETENTION.value in ("full", "encrypted")
-            await resume_approved(
-                state.db_engine,
-                approval_id,
-                provider=state.provider,
-                retain_response_content=retain_response,
-                policy=state.policy,
-                salt=state.settings.effective_hash_salt(),
-                detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
-            )
-
-        final = get_approval(state.db_engine, approval_id)
-        assert final is not None
         payload = ApprovalDecisionResponse(
             approval_id=approval_id,
-            status=final.state,
+            status=result.final_approval.state,
             decided_at=_rfc3339(result.decision_row.created_at),
         )
         return JSONResponse(status_code=200, content=payload.model_dump())
