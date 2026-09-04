@@ -64,6 +64,11 @@ ignore = [
 "tests/*" = ["S101", "S104", "S105", "S106"]  # asserts, 0.0.0.0 test fixtures and
 # literal test secrets are fine in tests — these never bind a real socket or
 # guard a real credential.
+"tests/test_docker_smoke.py" = ["S603", "S607"]  # deliberate, hardcoded
+# `subprocess.run(["docker", ...])` calls driving the Phase 5 Docker smoke
+# test (PLAN.md WS-15) — every argument list is a fixed literal, never
+# user/network input, and the whole point of the test is to invoke the
+# `docker` CLI by its name on PATH.
 
 # --- mypy --------------------------------------------------------------
 # Strict on app/ (WS-01 acceptance criterion); relaxed on tests/ per the

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
 
@@ -21,6 +24,82 @@ def test_readyz_reports_mock_mode(client: TestClient) -> None:
     assert body["ready"] is True
     assert body["mode"] == "mock"
     assert body["dependencies"]["policy"] == "ok"
+
+
+def test_readyz_provider_not_configured_for_live_mode_without_preflight(
+    client_factory: Callable[..., TestClient],
+) -> None:
+    """Phase 1-4 behaviour, unchanged by Phase 5: a live upstream with no
+    Ollama preflight requested makes no reachability claim (ADR 0007 — the
+    preflight is opt-in via OLLAMA_PREFLIGHT_ENABLED, not inferred from
+    UPSTREAM_BASE_URL's shape)."""
+    c = client_factory(UPSTREAM_BASE_URL="https://api.example.com/v1")
+    body = c.get("/readyz").json()
+    assert body["mode"] == "live"
+    assert body["dependencies"]["provider"] == "not_configured"
+    assert body["ready"] is True
+
+
+@respx.mock
+def test_readyz_ollama_preflight_ok(client_factory: Callable[..., TestClient]) -> None:
+    """SPEC.md §2.10/DEP-003: a reachable host Ollama with the configured
+    model present makes /readyz ready with provider: ok."""
+    respx.get("http://ollama.test.internal:11434/api/tags").mock(
+        return_value=httpx.Response(200, json={"models": [{"name": "qwen3:8b"}]})
+    )
+    c = client_factory(
+        UPSTREAM_BASE_URL="http://ollama.test.internal:11434/v1",
+        UPSTREAM_MODEL="qwen3:8b",
+        OLLAMA_PREFLIGHT_ENABLED="true",
+    )
+    body = c.get("/readyz").json()
+    assert body["mode"] == "live"
+    assert body["dependencies"]["provider"] == "ok"
+    assert body["ready"] is True
+
+
+@respx.mock
+def test_readyz_ollama_preflight_unreachable_marks_not_ready(
+    client_factory: Callable[..., TestClient],
+) -> None:
+    """DEP-003: "Preflight failure MUST mark /readyz not-ready ... and MUST
+    NOT crash the process" — the app still starts and /healthz still
+    reports the process alive; only /readyz (and its 503) reflects it."""
+    respx.get("http://ollama.test.internal:11434/api/tags").mock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+    c = client_factory(
+        UPSTREAM_BASE_URL="http://ollama.test.internal:11434/v1",
+        UPSTREAM_MODEL="qwen3:8b",
+        OLLAMA_PREFLIGHT_ENABLED="true",
+    )
+    assert c.get("/healthz").status_code == 200
+    r = c.get("/readyz")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["ready"] is False
+    assert body["dependencies"]["provider"] == "unreachable"
+
+
+@respx.mock
+def test_readyz_ollama_preflight_model_missing_marks_not_ready(
+    client_factory: Callable[..., TestClient],
+) -> None:
+    """DEP-003: reachable host, but the configured model isn't pulled —
+    still a not-ready preflight failure, distinguished only by the log
+    message (app/providers/ollama_preflight.py), not by the /readyz JSON
+    shape (see ADR 0007 for why the public schema wasn't extended)."""
+    respx.get("http://ollama.test.internal:11434/api/tags").mock(
+        return_value=httpx.Response(200, json={"models": [{"name": "llama3:8b"}]})
+    )
+    c = client_factory(
+        UPSTREAM_BASE_URL="http://ollama.test.internal:11434/v1",
+        UPSTREAM_MODEL="qwen3:8b",
+        OLLAMA_PREFLIGHT_ENABLED="true",
+    )
+    r = c.get("/readyz")
+    assert r.status_code == 503
+    assert r.json()["dependencies"]["provider"] == "unreachable"
 
 
 def test_benign_request_returns_openai_shape_at_top_level(client: TestClient) -> None:

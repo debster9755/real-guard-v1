@@ -192,3 +192,25 @@ def test_ephemeral_session_secret_differs_across_instances() -> None:
 def test_ephemeral_hash_salt_stable_within_a_process() -> None:
     s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.effective_hash_salt() == s.effective_hash_salt()
+
+
+# --- OLLAMA_PREFLIGHT_ENABLED (Phase 5, ADR 0007) ---------------------------
+
+
+def test_ollama_preflight_disabled_by_default() -> None:
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert s.OLLAMA_PREFLIGHT_ENABLED is False
+
+
+def test_ollama_preflight_without_upstream_url_is_rejected() -> None:
+    with pytest.raises(ConfigurationError, match="OLLAMA_PREFLIGHT_ENABLED=true requires"):
+        Settings(_env_file=None, OLLAMA_PREFLIGHT_ENABLED=True)  # type: ignore[call-arg]
+
+
+def test_ollama_preflight_with_upstream_url_is_accepted() -> None:
+    s = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        OLLAMA_PREFLIGHT_ENABLED=True,
+        UPSTREAM_BASE_URL="http://host.docker.internal:11434/v1",
+    )
+    assert s.OLLAMA_PREFLIGHT_ENABLED is True

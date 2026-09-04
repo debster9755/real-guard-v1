@@ -1,0 +1,32 @@
+# Phase 5 / WS-15: keep the build context small and never ship dev
+# artefacts, secrets, or local state into the image.
+.git
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+real_guard_v1.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.hypothesis
+.coverage
+htmlcov
+coverage.xml
+
+# Local data / secrets (CFG-004: .env must never be baked into an image)
+.env
+/data
+*.db
+*.db-shm
+*.db-wal
+
+# Docs and OS/editor cruft — irrelevant to the runtime image
+docs
+*.md
+!README.md
+.DS_Store
+.vscode
+.idea

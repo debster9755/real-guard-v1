@@ -57,6 +57,7 @@ from app.pipeline import build_input_detectors, run_input_pipeline
 from app.policy import Policy, PolicyLoadError, load_policy
 from app.providers.base import Provider
 from app.providers.mock import MockProvider
+from app.providers.ollama_preflight import check_ollama_preflight
 from app.providers.openai_compatible import (
     OpenAICompatibleProvider,
     SsrfValidationError,
@@ -113,6 +114,17 @@ class AppState:
     provider: Provider
     detectors: list[Detector]
     db_engine: Any
+    provider_status: str
+    """ok | unreachable | not_configured — surfaced verbatim on `/readyz`.
+
+    mock mode: always "ok" (the mock provider cannot fail — SPEC.md §2.9).
+    Live mode, preflight disabled: "not_configured" — unchanged Phase 1-4
+    behaviour; this build makes no reachability claim about a generic
+    OpenAI-compatible upstream it was never asked to check.
+    Live mode, preflight enabled (`OLLAMA_PREFLIGHT_ENABLED=true` — the
+    `ollama-host` compose profile): the real result of the §2.10/DEP-003
+    startup preflight below, cached for the process's lifetime.
+    """
 
     def __init__(self) -> None:
         self.settings = load_settings()
@@ -137,6 +149,28 @@ class AppState:
                 "This is the default for local evaluation; set UPSTREAM_BASE_URL to "
                 "use a real provider."
             )
+            self.provider_status = "ok"
+        elif self.settings.OLLAMA_PREFLIGHT_ENABLED:
+            # SPEC.md §2.10 / DEP-003 (Phase 5): a startup preflight against
+            # the host Ollama's `GET /api/tags`, run once here and cached —
+            # see app/providers/ollama_preflight.py's module docstring for
+            # why this isn't re-checked on every /readyz poll. A failed
+            # preflight logs the actionable message DEP-003 requires and
+            # marks /readyz not-ready (below); it never raises, so a
+            # misconfigured or unreachable Ollama degrades readiness rather
+            # than crashing the process — the dashboard and approval queue
+            # stay reachable throughout.
+            assert self.settings.UPSTREAM_BASE_URL is not None  # validated above
+            result = check_ollama_preflight(
+                self.settings.UPSTREAM_BASE_URL, self.settings.UPSTREAM_MODEL
+            )
+            self.provider_status = result.status
+            if result.status == "ok":
+                logger.info(result.message)
+            else:
+                logger.warning(result.message)
+        else:
+            self.provider_status = "not_configured"
 
         try:
             self.policy = load_policy(
@@ -666,7 +700,10 @@ def register_routes(app: FastAPI) -> None:
         state: AppState = app.state.rg
         mode = "mock" if state.settings.mock_mode else "live"
         policy_status: Any = "ok" if state.policy is not None else "invalid"
-        provider_status: Any = "ok" if mode == "mock" else "not_configured"
+        # DEP-003: a failed Ollama preflight (state.provider_status ==
+        # "unreachable") must mark /readyz not-ready — folded into `ready`
+        # below alongside the pre-existing policy/database checks.
+        provider_status: Any = state.provider_status
 
         database_status: Any
         try:
@@ -676,7 +713,11 @@ def register_routes(app: FastAPI) -> None:
         except Exception:  # noqa: BLE001 — readiness probe: report, never raise
             database_status = "unreachable"
 
-        ready = state.policy is not None and database_status == "ok"
+        ready = (
+            state.policy is not None
+            and database_status == "ok"
+            and provider_status != "unreachable"
+        )
         if not ready:
             response.status_code = 503
 

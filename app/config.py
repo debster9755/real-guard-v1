@@ -114,6 +114,14 @@ class Settings(BaseSettings):
     ALLOW_MOCK_IN_PRODUCTION: bool = False
     ALLOW_PLAINTEXT_RETENTION: bool = False
 
+    # --- Ollama preflight (SPEC.md §2.10, DEP-003; Phase 5 / ADR 0007) -----
+    # Not in SPEC.md §15's table verbatim — ADR 0007 documents why a
+    # dedicated opt-in flag (rather than sniffing UPSTREAM_BASE_URL for
+    # something that looks like Ollama) is the startup preflight's trigger.
+    # False by default everywhere except the `ollama-host` compose profile,
+    # which sets it true alongside UPSTREAM_BASE_URL.
+    OLLAMA_PREFLIGHT_ENABLED: bool = False
+
     # ---- process-lifetime caches for lazily-generated ephemeral secrets --
     # (not settings fields themselves — see effective_session_secret/salt)
     _ephemeral_session_secret: str | None = PrivateAttr(default=None)
@@ -206,6 +214,16 @@ class Settings(BaseSettings):
                 "UPSTREAM_BASE_URL is required when APP_ENV=production "
                 "(mock mode must not activate silently — DEP-005). "
                 "Set ALLOW_MOCK_IN_PRODUCTION=true to override explicitly."
+            )
+
+        # OLLAMA_PREFLIGHT_ENABLED only makes sense against a real upstream
+        # (ADR 0007) — enabling it in mock mode would mean checking Ollama's
+        # health for a provider that never talks to it.
+        if self.OLLAMA_PREFLIGHT_ENABLED and not self.UPSTREAM_BASE_URL:
+            errors.append(
+                "OLLAMA_PREFLIGHT_ENABLED=true requires UPSTREAM_BASE_URL to be set "
+                "(the preflight checks the host Ollama the configured upstream points at; "
+                "mock mode has no upstream to check)"
             )
 
         # CONTENT_RETENTION=full: warn in any env, refuse in production

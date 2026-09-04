@@ -1,0 +1,73 @@
+# real-guard-v1 deployment profiles. PLAN.md §6 Phase 5 / WS-15, SPEC.md
+# §14 (DEP-002, DEP-003). See docs/adr/0007-phase5-ollama-profile-and-docker-deployment.md
+# for the reasoning behind the service/profile layout below, in particular
+# why `firewall` has no `profiles:` key (Compose starts profile-less
+# services unconditionally — required for DEP-002's bare `docker compose up
+# --build` to work with no `.env` edits and no `--profile` flag) and why
+# the Ollama invocation below names its service explicitly (a bare
+# `docker compose --profile ollama-host up`, with no service name, would
+# ALSO start `firewall` alongside it and collide on port 8000 — verified
+# empirically against Compose v5.4.0, not assumed).
+#
+#   Mock (default):  docker compose up --build
+#   Docker mock:      docker compose --profile mock up --build firewall
+#   Ollama / Qwen3-8B: docker compose --profile ollama-host up --build firewall-ollama
+#
+# Both services build the same image (one `Dockerfile`) and differ only in
+# environment — SPEC.md §2.10: "Ollama is configuration of the generic
+# OpenAI-compatible adapter, not separate code."
+
+services:
+  firewall:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: real-guard-v1:latest
+    container_name: real-guard-v1-mock
+    ports:
+      # Bound to the host's loopback interface only, matching SPEC.md's
+      # deployment-mode table ("Mock (default) ... Auth: Optional,
+      # loopback") — the container's own internal bind is necessarily
+      # 0.0.0.0 (Dockerfile CMD), but nothing outside the host machine can
+      # reach it through this mapping.
+      - "127.0.0.1:8000:8000"
+    environment:
+      APP_ENV: development
+      # No UPSTREAM_BASE_URL set -> MockProvider (DEP-004/DEP-005 unchanged).
+      LOG_LEVEL: INFO
+    volumes:
+      - firewall-mock-data:/app/data
+    restart: unless-stopped
+
+  firewall-ollama:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: real-guard-v1:latest
+    container_name: real-guard-v1-ollama
+    profiles: ["ollama-host"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      APP_ENV: development
+      UPSTREAM_BASE_URL: "http://host.docker.internal:11434/v1"
+      UPSTREAM_MODEL: "qwen3:8b"
+      # DEP-003 / SPEC.md §2.10: the startup preflight against the host
+      # Ollama's GET /api/tags — see ADR 0007 for why this is a dedicated
+      # opt-in flag rather than inferred from UPSTREAM_BASE_URL's shape.
+      OLLAMA_PREFLIGHT_ENABLED: "true"
+      LOG_LEVEL: INFO
+    extra_hosts:
+      # DEP-003 / decision D6: host.docker.internal via the host-gateway
+      # alias, which works the same way on Linux as it does natively on
+      # Docker Desktop (macOS/Windows) — the mitigation the WS-15 risk
+      # entry names for "host.docker.internal behaving differently across
+      # platforms."
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - firewall-ollama-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  firewall-mock-data:
+  firewall-ollama-data:

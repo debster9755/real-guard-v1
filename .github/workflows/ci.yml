@@ -31,6 +31,17 @@ jobs:
         run: python scripts/validate_contracts.py
 
       - name: pytest with coverage
+        # WS-15's own CI requirement ("a CI Docker smoke test running the
+        # README's three curl commands against the built image") is met by
+        # this same step, not a separate job: tests/test_docker_smoke.py is
+        # collected here, builds the real Dockerfile image and runs the
+        # three README quick-start requests against it over real HTTP —
+        # GitHub-hosted ubuntu-latest runners ship a running Docker daemon,
+        # so it executes for real rather than skipping. tests/test_ollama_live.py
+        # self-skips here (no host Ollama in this runner) per PLAN.md Phase
+        # 5's own acceptance note — "skipped, not failed, in CI where no
+        # Ollama exists" — see both files' docstrings and the `docker`/
+        # `ollama` marker definitions in pyproject.toml.
         run: pytest --cov=app --cov-report=term-missing --cov-report=xml -q
 
       - name: Upload coverage report
@@ -39,7 +50,6 @@ jobs:
           name: coverage-xml
           path: coverage.xml
 
-  # Docker smoke, README-command, Ollama, security-scan and benchmark jobs
-  # are added in their owning phases (WS-15 / Phase 5, WS-16 / Phase 8,
-  # WS-17 / Phase 6) rather than stubbed out now — an empty job that always
-  # passes is not a real check.
+  # README-command extraction, security-scan and benchmark jobs are added
+  # in their owning phases (WS-16 / Phase 8, WS-17 / Phase 6) rather than
+  # stubbed out now — an empty job that always passes is not a real check.
