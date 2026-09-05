@@ -1,0 +1,34 @@
+v0.1.0 — first tagged release
+
+An open-source AI Firewall for LLM and agent traffic: inspects,
+transforms, and (where policy requires) holds for human approval every
+request and response passing through an OpenAI-compatible API.
+
+Highlights:
+- Drop-in OpenAI-compatible gateway; deterministic mock mode by default,
+  no network or API key required to start.
+- Three orthogonal verdicts (ALLOW / DENY / NEED_APPROVAL) and three
+  independent transformations (NONE / REDACT / MASK), declared by policy.
+- A real, persisted 8-state approval workflow with restart recovery,
+  idempotency keys, replay prevention, and exactly-once resume.
+- A server-rendered reviewer dashboard with session-cookie auth and CSRF
+  protection; no JS framework, no third-party CDN dependency.
+- Tool-call inspection (deny/hold) that never executes a tool.
+- A frozen, schema-validated 54-case golden corpus enforced as a
+  CI-blocking gate (32/32 attack recall, 12/12 benign pass rate, 10/10
+  redaction accuracy).
+- A working `ollama-host` Docker Compose profile against local qwen3:8b.
+- Structured audit events, 25 Prometheus metrics, a persisted rate
+  limiter, and a code-enforced log-field allowlist.
+- Measured (not invented) benchmarks in docs/benchmarks.md, and a
+  documented threat model mapping every SPEC.md §19 threat to a control
+  or a stated residual risk.
+
+Known limitations: streaming is rejected outright (not yet supported);
+tool execution is out of scope; dependency pinning uses version ranges,
+not a hash-locked lockfile (see docs/adr/0011).
+
+See CHANGELOG.md for the full phase-by-phase history and
+docs/release/v0.1.0-notes.md for the complete release notes.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

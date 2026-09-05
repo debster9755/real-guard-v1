@@ -60,7 +60,7 @@ firewall–upstream path.
 | THR-013 | Policy tampering | TB6 | Schema validation; policy hash in every audit event | `POL-015`, `POL-020` | Filesystem write access |
 | THR-014 | Audit tampering | TB5 | Append-only tables; hash chain | `DAT-004`, `DAT-005` | Direct DB access; **tamper-evident only** |
 | THR-015 | Denial of service | TB1 | Size limits, rate limiting, detector deadlines, ReDoS review | `API-006`, `DET-019` | Distributed abuse |
-| THR-016 | Dependency compromise | TB6 | Pinned hashes, `pip-audit`, Trivy, pinned base digest | PLAN WS-17 | Transitive zero-days |
+| THR-016 | Dependency compromise | TB6 | Pinned version ranges, `pip-audit`, Trivy, pinned base digest | PLAN WS-17 | Transitive zero-days; hash-pinned lockfile deferred past v0.1.0 (docs/adr/0011) |
 | THR-017 | Unsafe logging | TB5 | Field allowlist, never-log denylist, a grep test | `PRV-007`, `PRV-008` | `CONTENT_RETENTION=full` |
 | THR-018 | CSRF on the dashboard | TB4 | `SameSite=Strict`, CSRF tokens, CSP | `SEC-005`, `SEC-007` | — |
 | THR-019 | Timing attack on keys | TB1, TB4 | Constant-time comparison | `SEC-002` | — |

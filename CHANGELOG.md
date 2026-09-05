@@ -13,6 +13,57 @@ short commit SHA that landed it (`git log --oneline` on `main`).
 
 ## [Unreleased]
 
+### Phase 9 — release preparation (`docs/adr/0011`)
+
+Preparation only — **not** the publication step. `v0.1.0` is not tagged,
+no GitHub repository exists yet, and this entry does not claim otherwise;
+see `docs/adr/0011` for the full account and the completion report for
+what explicitly still requires the user's separate go-ahead.
+
+- **Added** a real full-history `gitleaks` scan (tool installed for this
+  phase): 16 findings, each individually confirmed as a test fixture or
+  documentation example, none a real credential. Added
+  `docs/security/gitleaks-baseline.json` (gitleaks' own baseline
+  mechanism) so these reviewed findings don't re-flag on every future
+  scan, and a `gitleaks` step to `.github/workflows/ci.yml`'s `security`
+  job — closing the gap ADR 0008 explicitly deferred to this phase.
+- **Fixed** a real, pre-existing invalid-YAML defect in
+  `.github/workflows/ci.yml` (an unquoted step name containing a bare
+  `": "` sequence) that would have broken the `lint-type-test` job the
+  first time a real GitHub Actions runner ever parsed it — never caught
+  before because this repository's CI has never actually run on GitHub.
+- **Fixed** `docs/threat-model.md` THR-016, which claimed a "pinned
+  hashes" control that was never implemented; corrected to state what
+  actually exists (pinned version ranges) and named the gap as a residual
+  risk instead.
+- **Added** `.github/ISSUE_TEMPLATE/{bug_report,detector_gap,false_positive}.md`
+  and `.github/PULL_REQUEST_TEMPLATE.md` (with a corpus-impact checkbox) —
+  WS-18 deliverables, previously unbuilt.
+- **Added** drafted, unpublished release content for review:
+  `docs/release/repo-metadata.md`, `docs/release/v0.1.0-notes.md`,
+  `docs/release/v0.1.0-tag-message.txt`.
+- **Re-verified fresh**, this phase, not cited from earlier reports:
+  `pip-audit` (zero vulnerabilities, production dependency set), Ruff,
+  `ruff format --check`, mypy strict, `scripts/validate_contracts.py`, the
+  full pytest suite (451 passed), the coverage gate (93.4% line / 81.8%
+  branch), a live `docker compose up --build` plus an unmodified `openai`
+  client call against it, all 8 canonical endpoints, the full
+  ALLOW/DENY/NEED_APPROVAL lifecycle including a real process
+  restart-and-resume with idempotent replay, both dashboard approve and
+  deny paths, and all 6 Mermaid diagrams rendered via `mmdc`.
+- **Confirmed a known, still-open gap, not a new one**: the
+  `test_benign_request_allowed_by_real_model` Ollama live test remains
+  flaky in this environment (real `qwen3:8b` "thinking" latency
+  occasionally exceeding the test's own timeout) — the same failure mode
+  ADR 0008 and ADR 0009 already documented, characterized further here
+  with a direct-Ollama timing measurement (132.35s for the exact failing
+  prompt), not fixed.
+- **Decided**, and documented as a judgment call rather than either
+  silently expanding or silently skipping: dependency hash-pinning stays
+  an explicit, named residual risk past `v0.1.0` — §15/§13's literal text
+  does not make it a Phase 9 blocker, only "zero high/critical
+  vulnerabilities" is.
+
 ### Phase 7 — benchmarking, coverage gate, adversarial review (`b654ac9`, `docs/adr/0009`)
 
 - **Added** `scripts/benchmark.py`, generating `docs/benchmarks.md` from a

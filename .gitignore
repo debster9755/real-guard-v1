@@ -10,6 +10,7 @@ venv/
 .coverage
 htmlcov/
 coverage.xml
+/build/
 
 # Environment / secrets — CFG-004: .env must never be tracked
 .env

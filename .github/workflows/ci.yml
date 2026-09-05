@@ -61,7 +61,7 @@ jobs:
         # this one step.
         run: pytest --cov=app --cov-report=term-missing --cov-report=xml -q
 
-      - name: Coverage gate (PLAN.md §10.2 G14: >= 85% line, >= 75% branch)
+      - name: "Coverage gate (PLAN.md §10.2 G14: >= 85% line, >= 75% branch)"
         # Phase 7 / WS-14 ("a coverage gate" — see
         # docs/adr/0009-phase7-benchmarking-and-adversarial-review.md):
         # coverage.py's own --fail-under enforces one blended percentage,
@@ -82,10 +82,31 @@ jobs:
   # Dockerfile fix two steps below (removing pip's own vendored copies of
   # msgpack/setuptools, neither a real-guard-v1 dependency) was found.
   security:
-    name: security (pip-audit, Trivy)
+    name: security (pip-audit, Trivy, gitleaks)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gitleaks scans commit history, not just the working tree — a
+          # shallow checkout would only see the most recent commit.
+          fetch-depth: 0
+
+      - name: gitleaks (full-history secret scan)
+        # Phase 9 / docs/adr/0011-phase9-release-preparation.md. Findings are
+        # checked against docs/security/gitleaks-baseline.json, generated
+        # 2026-09-05 from a full-history scan and manually reviewed line by
+        # line — every entry is a test fixture or a documentation example
+        # (see the ADR for the per-finding breakdown), never a real
+        # credential. A genuinely new secret is *not* in the baseline and
+        # still fails this step.
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+          GITLEAKS_ENABLE_COMMENTS: false
+        with:
+          args: >-
+            detect --source . -v
+            --baseline-path docs/security/gitleaks-baseline.json
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
