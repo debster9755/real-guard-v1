@@ -1,13 +1,15 @@
 """Persistence layer. SPEC.md §10 (DAT-001..006), §2.20.
 
-ADR 0004 scopes this Phase's tables to exactly what the approval workflow
-needs to be real rather than a stub: `transactions` (written only for
-requests that reach `NEED_APPROVAL` — ADR 0004 §2), `approvals`,
-`approval_decisions`, and `audit_events`. `detector_findings`, `policy_hits`,
-`idempotency_records`, `rate_limit_state` and `encrypted_payloads` are
-deferred to Phase 4's broader observability/rate-limiting work; nothing here
-forecloses adding them later, since SQLAlchemy models and Alembic migrations
-are additive.
+ADR 0004 scoped the first cut of this module to exactly what the approval
+workflow needed to be real rather than a stub: `transactions` (written only
+for requests that reach `NEED_APPROVAL` — ADR 0004 §2), `approvals`,
+`approval_decisions`, and `audit_events`. Phase 6 (ADR 0008, WS-13) adds
+`rate_limit_state` — the one remaining SPEC.md §10 table that phase's exit
+gate actually requires. `detector_findings`, `policy_hits` (as a table —
+still carried as JSON on `approvals`), `idempotency_records`, and
+`encrypted_payloads` remain deferred: no automated check in PLAN.md's Phase
+6 section requires them, and nothing here forecloses adding them later,
+since SQLAlchemy models and Alembic migrations are additive.
 
 SQLite in WAL mode (D7). Alembic migration scaffolding is deferred (ADR
 0004 §2) — this MVP has no prior deployment to migrate from, so
@@ -23,7 +25,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Engine, Integer, String, create_engine, event
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Engine,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    create_engine,
+    event,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -121,6 +133,39 @@ class AuditEventRow(Base):
     prev_hash: Mapped[str] = mapped_column(String)
     event_hash: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class RateLimitStateRow(Base):
+    """SPEC.md §10 `rate_limit_state`. Phase 6 / ADR 0008 (WS-13).
+
+    A fixed-window counter, not a true sliding log: `window_start` is the
+    aligned start of the current window (`floor(now / window_seconds) *
+    window_seconds`) and `request_count` is the number of requests admitted
+    in that window for that identity. This is the shape SPEC.md's own
+    column list dictates (`window_start`, `request_count` — a sliding-log
+    implementation would instead need one row per request, which the
+    schema does not provide for), even though WS-13's prose calls the
+    limiter "sliding-window" — ADR 0008 documents this literal reading.
+
+    `(identity_id, window_start)` unique — one row per identity per window,
+    updated in place by `app/ratelimit.py` under the same `BEGIN IMMEDIATE`
+    discipline `app/db.py.immediate_transaction()` already gives the
+    approval workflow (APR-004's reasoning applies identically here: two
+    concurrent requests for the same identity must never both read the
+    same pre-increment count)."""
+
+    __tablename__ = "rate_limit_state"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # rlm_
+    identity_id: Mapped[str] = mapped_column(String)
+    window_start: Mapped[datetime] = mapped_column(DateTime)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (
+        UniqueConstraint("identity_id", "window_start", name="uq_rate_limit_identity_window"),
+        Index("ix_rate_limit_window_start", "window_start"),
+    )
 
 
 def _enable_wal(dbapi_connection: Any, _connection_record: Any) -> None:

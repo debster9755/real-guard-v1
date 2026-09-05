@@ -31,10 +31,13 @@ from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
+from prometheus_client import CollectorRegistry, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.approvals import (
+    APPROVAL_STATES,
+    count_by_state,
     create_approval,
     decide_and_resume,
     get_approval_by_transaction,
@@ -43,19 +46,22 @@ from app.approvals import (
     reconcile_resuming_on_startup,
     sweep_expired,
 )
+from app.audit import record_decision_event
 from app.auth import IdentityClass, require_reviewer, resolve_decision_identity, resolve_identity
 from app.config import Settings, load_settings
 from app.dashboard import register_dashboard_routes
 from app.db import make_engine
 from app.decision import combine_decisions
-from app.detectors.base import Detector, Finding
+from app.detectors.base import Category, Detector, Finding
 from app.errors import ConfigurationError, ErrorCode, FirewallError
 from app.ids import new_id, new_transaction_id
+from app.logging_config import configure_logging
 from app.materialargs import compute_material_args_hash
+from app.metrics import ENDPOINT_TEMPLATES, Metrics, build_metrics
 from app.outputguard import run_output_guard, system_prompt_text_from_messages
 from app.pipeline import build_input_detectors, run_input_pipeline
 from app.policy import Policy, PolicyLoadError, load_policy
-from app.providers.base import Provider
+from app.providers.base import Provider, UpstreamResponseError, UpstreamTimeoutError
 from app.providers.mock import MockProvider
 from app.providers.ollama_preflight import check_ollama_preflight
 from app.providers.openai_compatible import (
@@ -63,6 +69,7 @@ from app.providers.openai_compatible import (
     SsrfValidationError,
     validate_upstream_url_for_production,
 )
+from app.ratelimit import check_rate_limit, rate_limit_config_from_policy
 from app.schemas import (
     AllowedResponse,
     ApprovalDecisionRequest,
@@ -91,6 +98,22 @@ def _rfc3339(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _tool_allowlist_from_policy(policy: Policy) -> frozenset[str]:
+    """OBS-012 (Phase 6): the bounded vocabulary `realguard_tool_findings_total`'s
+    `tool_name` label is clamped to — read from the loaded policy's own
+    `agent_tool_allowlist` rule, mirroring
+    app/detectors/tool_calls.py's `_extract_allowlist()` exactly, so the
+    metric's bound can never silently drift from what the policy actually
+    allows."""
+    for rule in policy.rules:
+        if rule.get("id") != "agent_tool_allowlist":
+            continue
+        condition = rule.get("when", {})
+        if "tool_not_in" in condition:
+            return frozenset(condition["tool_not_in"])
+    return frozenset()
+
+
 _STREAM_FIELD_MESSAGE = (
     "stream:true is not supported in the MVP (API-014) — the output guard "
     "cannot safely inspect a token stream without buffering it, which "
@@ -114,6 +137,7 @@ class AppState:
     provider: Provider
     detectors: list[Detector]
     db_engine: Any
+    metrics: Metrics
     provider_status: str
     """ok | unreachable | not_configured — surfaced verbatim on `/readyz`.
 
@@ -128,15 +152,33 @@ class AppState:
 
     def __init__(self) -> None:
         self.settings = load_settings()
+        # OBS-004/PRV-007 (Phase 6, WS-12): configured before anything else
+        # logs, so every line this process ever writes — including the
+        # mock-mode warning three lines below — goes through the
+        # allowlist-filtering JSON formatter.
+        configure_logging(self.settings.LOG_LEVEL.value)
         self.provider = self._build_provider(self.settings)
         self.db_engine = make_engine(self.settings.DATABASE_URL)
+        # Phase 6 (WS-12): a fresh CollectorRegistry per AppState, never the
+        # process-wide default — tests/conftest.py's client_factory builds
+        # many AppStates in one process, and re-registering the same metric
+        # name against a shared registry raises (app/metrics.py docstring).
+        self.metrics = build_metrics(CollectorRegistry())
         # APR-014: reconcile any row a prior process crash left in RESUMING
         # before this process serves a single request.
         reconciled = reconcile_resuming_on_startup(
-            self.db_engine, self.settings.MAX_RESUME_ATTEMPTS
+            self.db_engine, self.settings.MAX_RESUME_ATTEMPTS, metrics=self.metrics
         )
         if reconciled:
             logger.warning("startup: reconciled %d RESUMING approval(s) (APR-014)", reconciled)
+
+        # realguard_approval_queue_depth: computed live at scrape time
+        # (never push-updated), so it can never drift from the database.
+        for state_name in APPROVAL_STATES:
+            self.metrics.approval_queue_depth.labels(state=state_name).set_function(
+                lambda s=state_name: count_by_state(self.db_engine, s)  # type: ignore[misc]
+            )
+        self.metrics.build_info.labels(version="0.1.0", commit="unknown").set(1)
 
         # DEP-004: mock mode must be visible in at least four places. This
         # is place 1 (startup log, WARNING); /readyz and the X-RealGuard-Mode
@@ -187,6 +229,13 @@ class AppState:
 
         self.detectors = build_input_detectors(self.policy) if self.policy else []
 
+        if self.policy is not None:
+            self.metrics.policy_info.labels(
+                policy_version=self.policy.policy_version,
+                schema_version=str(self.policy.raw.get("schema_version", "unknown")),
+            ).set(1)
+            self.metrics.tool_allowlist = _tool_allowlist_from_policy(self.policy)
+
     @staticmethod
     def _build_provider(settings: Settings) -> Provider:
         """WS-06 (ADR 0005): mock mode stays the default (DEP-004/DEP-005 —
@@ -228,6 +277,10 @@ def create_app() -> FastAPI:
     app.add_middleware(CorrelationIdMiddleware)
     app.add_middleware(RequestSizeLimitMiddleware, settings=state.settings)
     app.add_middleware(SecurityHeadersMiddleware, settings=state.settings)
+    # Added last -> outermost in Starlette's stack, so it times the whole
+    # request (every other middleware's overhead included), matching what a
+    # real client would perceive as `realguard_http_request_duration_seconds`.
+    app.add_middleware(HttpMetricsMiddleware, metrics=state.metrics)
 
     register_exception_handlers(app)
     register_routes(app)
@@ -326,6 +379,40 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class HttpMetricsMiddleware(BaseHTTPMiddleware):
+    """OBS-001/OBS-012 (Phase 6, WS-12): `realguard_http_requests_total` and
+    `realguard_http_request_duration_seconds`. `endpoint` is always the
+    matched route's *template* (`request.scope["route"].path_format`, set
+    by Starlette's router before this middleware's `call_next()` returns —
+    a `BaseHTTPMiddleware` sees the same mutable `scope` dict the router
+    populated), never the raw resolved path; an unmatched route (a genuine
+    404) is labelled `"unmatched"` rather than leaking an arbitrary
+    caller-supplied path into a metric label."""
+
+    def __init__(self, app: Any, *, metrics: Metrics) -> None:
+        super().__init__(app)
+        self._metrics = metrics
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        t0 = time.perf_counter()
+        response = await call_next(request)
+        duration = time.perf_counter() - t0
+
+        route = request.scope.get("route")
+        endpoint = getattr(route, "path_format", None)
+        if endpoint not in ENDPOINT_TEMPLATES:
+            endpoint = "unmatched"
+
+        status_class = f"{response.status_code // 100}xx"
+        self._metrics.http_requests_total.labels(
+            endpoint=endpoint, method=request.method, status_class=status_class
+        ).inc()
+        self._metrics.http_request_duration_seconds.labels(endpoint=endpoint).observe(duration)
+        return response
+
+
 def _payload_too_large_response(request: Request) -> JSONResponse:
     txn_id = new_transaction_id()
     return JSONResponse(
@@ -350,7 +437,15 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(FirewallError)
     async def _firewall_error_handler(request: Request, exc: FirewallError) -> JSONResponse:
         txn_id = getattr(request.state, "transaction_id", None) or new_transaction_id()
-        return JSONResponse(status_code=exc.status, content=exc.to_envelope(txn_id))
+        state: AppState = app.state.rg
+        state.metrics.errors_total.labels(error_code=exc.code.value).inc()
+        response = JSONResponse(status_code=exc.status, content=exc.to_envelope(txn_id))
+        # ERR-007: "Retryable, after Retry-After" — set whenever the raiser
+        # supplied one (app/ratelimit.py, via app/main.py's rate-limit check).
+        retry_after = exc.details.get("retry_after_seconds")
+        if retry_after is not None:
+            response.headers["Retry-After"] = str(retry_after)
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(
@@ -360,6 +455,8 @@ def register_exception_handlers(app: FastAPI) -> None:
         # Pydantic's error `loc`/`msg` are structural (field paths and
         # constraint names), not content, so they're safe to return.
         txn_id = new_transaction_id()
+        state: AppState = app.state.rg
+        state.metrics.errors_total.labels(error_code=ErrorCode.INVALID_REQUEST.value).inc()
         return JSONResponse(
             status_code=400,
             content={
@@ -376,6 +473,8 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         txn_id = getattr(request.state, "transaction_id", None) or new_transaction_id()
+        state: AppState = app.state.rg
+        state.metrics.errors_total.labels(error_code=ErrorCode.INTERNAL_ERROR.value).inc()
         logger.exception("unhandled exception", extra={"transaction_id": txn_id})
         # ERR-021 / ERR-022: generic message + transaction_id only; no stack
         # trace or internal detail crosses the wire.
@@ -450,6 +549,63 @@ def _apply_transformation_or_deny(
         ) from e
 
 
+def _degraded_reason(findings: tuple[Finding, ...]) -> str:
+    """OBS-012-bounded `reason` label for `realguard_degraded_transactions_total`
+    — one of exactly two values, never a raw exception message. A
+    `DETECTOR_TIMEOUT` finding means at least one detector missed its
+    deadline (POL-007); any other degraded case is a detector that raised
+    (app/orchestrator.py's `_run_one()` isolates either without aborting the
+    rest)."""
+    if any(f.category == Category.DETECTOR_TIMEOUT for f in findings):
+        return "detector_timeout"
+    return "detector_error"
+
+
+def _audit_decision(
+    state: AppState,
+    *,
+    transaction_id: str,
+    correlation_id: str,
+    identity_id: str,
+    verdict: str,
+    risk_level: str,
+    transformation: str,
+    reason_codes: tuple[str, ...],
+    policy_hits: tuple[str, ...],
+    policy_version: str,
+    mode: str,
+    degraded: bool,
+) -> None:
+    """PRV-009: exactly one `event_type="decision"` audit event per
+    transaction, for every verdict. §2.15: "an audit write failure MUST
+    fail the transaction closed when APP_ENV=production. Evidence is not
+    optional." — in any other environment, a write failure is logged and
+    the response still goes out, so a database hiccup in development never
+    blocks a request over an evidence write it can't yet make durable."""
+    try:
+        record_decision_event(
+            state.db_engine,
+            transaction_id=transaction_id,
+            correlation_id=correlation_id,
+            actor_id=identity_id,
+            verdict=verdict,
+            risk_level=risk_level,
+            transformation=transformation,
+            reason_codes=list(reason_codes),
+            policy_hits=list(policy_hits),
+            policy_version=policy_version,
+            mode=mode,
+            degraded=degraded,
+        )
+    except Exception:  # noqa: BLE001 — see §2.15 handling below
+        if state.settings.APP_ENV.value == "production":
+            raise FirewallError(ErrorCode.DATABASE_ERROR, "The audit log is unavailable.") from None
+        logger.warning(
+            "audit event write failed — continuing (non-production)",
+            extra={"transaction_id": transaction_id},
+        )
+
+
 def register_routes(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
     async def create_chat_completion(request: Request) -> Response:
@@ -475,6 +631,45 @@ def register_routes(app: FastAPI) -> None:
 
         mode = "mock" if state.settings.mock_mode else "live"
 
+        # Phase 6 (WS-13): identity resolved up front — every branch below
+        # needs it now (the rate limiter scopes by it; NEED_APPROVAL needed
+        # it already, just later). SEC-009: only the presented key/session
+        # is ever authoritative for it.
+        identity = resolve_identity(request.headers.get("Authorization"), state.settings)
+
+        # WS-13: rate limiting runs before any detection work — a "blunt
+        # cost and abuse" control that should reject a request before this
+        # system spends any CPU inspecting it, not after. §2.17: never
+        # applied to GET /healthz, GET /readyz, or the approval-decision
+        # endpoint — trivially satisfied, since this check exists in no
+        # other handler.
+        rate_limit_config = rate_limit_config_from_policy(
+            state.policy,
+            default_requests=state.settings.RATE_LIMIT_REQUESTS,
+            default_window_seconds=state.settings.RATE_LIMIT_WINDOW_SECONDS,
+        )
+        try:
+            rate_result = check_rate_limit(
+                state.db_engine, identity_id=identity.identity_id, config=rate_limit_config
+            )
+        except Exception:  # noqa: BLE001 — §2.17 fail-open/closed handling below
+            # §2.17: "a limiter backend failure fails open in development
+            # and closed in production."
+            if state.settings.APP_ENV.value == "production":
+                raise FirewallError(
+                    ErrorCode.DATABASE_ERROR, "The rate limiter is unavailable."
+                ) from None
+            logger.warning("rate limiter backend failure — failing open (development)")
+            rate_result = None
+
+        if rate_result is not None and not rate_result.allowed:
+            state.metrics.rate_limited_total.labels(scope=rate_limit_config.scope).inc()
+            raise FirewallError(
+                ErrorCode.RATE_LIMITED,
+                "Rate limit exceeded for this identity.",
+                details={"retry_after_seconds": rate_result.retry_after_seconds},
+            )
+
         # POL-009: no cached policy and none loaded at boot -> 503, never a
         # silent allow.
         if state.policy is None:
@@ -492,11 +687,43 @@ def register_routes(app: FastAPI) -> None:
             salt=state.settings.effective_hash_salt(),
             detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
             tools=body.get("tools"),
+            metrics=state.metrics,
         )
         detection_ms = (time.perf_counter() - t_detect0) * 1000
         decision = result.decision
 
+        # Instrumentation common to every verdict (OBS-001..003, OBS-012):
+        # recorded once here rather than duplicated in each branch below.
+        state.metrics.decisions_total.labels(
+            verdict=decision.verdict, plane="input", mode=mode
+        ).inc()
+        state.metrics.risk_level_total.labels(level=result.risk.risk_level.value).inc()
+        for h in decision.policy_hits:
+            state.metrics.policy_hits_total.labels(rule_id=h.rule_id).inc()
+        for rc in decision.reason_codes:
+            state.metrics.reason_codes_total.labels(reason_code=rc).inc()
+        if decision.degraded:
+            state.metrics.degraded_transactions_total.labels(
+                reason=_degraded_reason(result.findings)
+            ).inc()
+        state.metrics.firewall_added_seconds.labels(plane="input").observe(detection_ms / 1000)
+
         if decision.verdict == "DENY":
+            state.metrics.upstream_calls_avoided_total.labels(verdict="DENY").inc()
+            _audit_decision(
+                state,
+                transaction_id=txn_id,
+                correlation_id=request.state.correlation_id,
+                identity_id=identity.identity_id,
+                verdict=decision.verdict,
+                risk_level=result.risk.risk_level.value,
+                transformation=decision.transformation,
+                reason_codes=decision.reason_codes,
+                policy_hits=tuple(h.rule_id for h in decision.policy_hits),
+                policy_version=policy_version,
+                mode=mode,
+                degraded=decision.degraded,
+            )
             denied = DeniedResponse(
                 risk_level=result.risk.risk_level.value,
                 reason_codes=list(decision.reason_codes),
@@ -520,10 +747,19 @@ def register_routes(app: FastAPI) -> None:
         if decision.verdict == "NEED_APPROVAL":
             # ADR 0004: real persistence, not a refusal stub. APR-005: the
             # approval row is committed *before* this handler returns 202.
-            identity = resolve_identity(request.headers.get("Authorization"), state.settings)
+            # (`identity` was already resolved above, Phase 6 — WS-13 needed
+            # it before this branch existed to reach it.)
+            t_transform0 = time.perf_counter()
             transformed_messages = _apply_transformation_or_deny(
                 body["messages"], decision.transformation
             )
+            state.metrics.transformation_duration_seconds.labels(
+                transformation=decision.transformation
+            ).observe(time.perf_counter() - t_transform0)
+            if decision.transformation != "NONE":
+                state.metrics.transformations_total.labels(
+                    transformation=decision.transformation, plane="input"
+                ).inc()
             request_id = new_id("req")
             transformed_payload = {**body, "messages": transformed_messages}
             material_args_hash = compute_material_args_hash(transformed_messages, body.get("tools"))
@@ -549,8 +785,23 @@ def register_routes(app: FastAPI) -> None:
                 ttl_seconds=state.settings.APPROVAL_TTL_SECONDS,
                 retain_raw_content=retain_raw,
                 raw_request_content=body if retain_raw else None,
+                metrics=state.metrics,
             )
             approval = creation.approval
+            _audit_decision(
+                state,
+                transaction_id=txn_id,
+                correlation_id=request.state.correlation_id,
+                identity_id=identity.identity_id,
+                verdict=decision.verdict,
+                risk_level=result.risk.risk_level.value,
+                transformation=decision.transformation,
+                reason_codes=decision.reason_codes,
+                policy_hits=tuple(need_approval_policy_hits),
+                policy_version=policy_version,
+                mode=mode,
+                degraded=decision.degraded,
+            )
             need_approval = NeedApprovalResponse(
                 risk_level=result.risk.risk_level.value,
                 reason_codes=list(decision.reason_codes),
@@ -570,12 +821,36 @@ def register_routes(app: FastAPI) -> None:
 
         # ALLOW — apply REDACT (the only input-plane transformation; ADR
         # 0003) to each message's content before forwarding upstream.
+        t_transform0 = time.perf_counter()
         forward_messages = _apply_transformation_or_deny(body["messages"], decision.transformation)
+        state.metrics.transformation_duration_seconds.labels(
+            transformation=decision.transformation
+        ).observe(time.perf_counter() - t_transform0)
+        if decision.transformation != "NONE":
+            state.metrics.transformations_total.labels(
+                transformation=decision.transformation, plane="input"
+            ).inc()
         forward_body = {**body, "messages": forward_messages}
 
         t_upstream0 = time.perf_counter()
-        upstream_response = await state.provider.complete(forward_body)
+        try:
+            upstream_response = await state.provider.complete(forward_body)
+        except (UpstreamTimeoutError, UpstreamResponseError) as e:
+            # TST-016 (SPEC.md §16 ERR-013/014/015): this handler does not
+            # yet map these to the documented error codes/status — a
+            # pre-existing gap this phase's scope (WS-12/13/17) does not
+            # extend to fixing (see docs/adr/0008). Real instrumentation
+            # regardless: the error still surfaces (via the generic
+            # exception handler, unchanged), but is now counted first.
+            kind = "timeout" if isinstance(e, UpstreamTimeoutError) else "response_error"
+            state.metrics.upstream_errors_total.labels(
+                provider=state.provider.name, kind=kind
+            ).inc()
+            raise
         upstream_ms = (time.perf_counter() - t_upstream0) * 1000
+        state.metrics.upstream_duration_seconds.labels(provider=state.provider.name).observe(
+            upstream_ms / 1000
+        )
 
         # SYS-006/SYS-014 (ADR 0005): the output guard runs on every ALLOW
         # response before it is ever serialized to the client — the only
@@ -599,8 +874,20 @@ def register_routes(app: FastAPI) -> None:
             salt=state.settings.effective_hash_salt(),
             detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
             upstream_response=upstream_response,
+            metrics=state.metrics,
         )
         output_guard_ms = (time.perf_counter() - t_output0) * 1000
+        state.metrics.firewall_added_seconds.labels(plane="response").observe(
+            output_guard_ms / 1000
+        )
+        for h in guard_result.decision.policy_hits:
+            state.metrics.policy_hits_total.labels(rule_id=h.rule_id).inc()
+        for rc in guard_result.decision.reason_codes:
+            state.metrics.reason_codes_total.labels(reason_code=rc).inc()
+        if guard_result.decision.transformation != "NONE":
+            state.metrics.transformations_total.labels(
+                transformation=guard_result.decision.transformation, plane="response"
+            ).inc()
 
         # ADR 0005: combine_decisions() (originally built to merge several
         # per-tool-candidate Decisions, app/pipeline.py) applies unchanged
@@ -612,6 +899,16 @@ def register_routes(app: FastAPI) -> None:
         overall_risk_level = _max_risk_level(
             result.risk.risk_level.value, guard_result.risk.risk_level.value
         )
+        state.metrics.decisions_total.labels(
+            verdict=overall_decision.verdict, plane="response", mode=mode
+        ).inc()
+        state.metrics.risk_level_total.labels(level=overall_risk_level).inc()
+        if overall_decision.degraded and not decision.degraded:
+            # Only count once: if the input plane was already degraded, the
+            # transaction-level increment already happened above.
+            state.metrics.degraded_transactions_total.labels(
+                reason=_degraded_reason(overall_findings)
+            ).inc()
 
         if overall_decision.verdict == "DENY":
             # SPEC.md §3.7/§2.11: the upstream call already happened, but a
@@ -621,6 +918,20 @@ def register_routes(app: FastAPI) -> None:
             # for why this is the conservative, deliberately-chosen behaviour
             # rather than silently downgrading to ALLOW because "the model
             # already answered."
+            _audit_decision(
+                state,
+                transaction_id=txn_id,
+                correlation_id=request.state.correlation_id,
+                identity_id=identity.identity_id,
+                verdict=overall_decision.verdict,
+                risk_level=overall_risk_level,
+                transformation=overall_decision.transformation,
+                reason_codes=overall_decision.reason_codes,
+                policy_hits=tuple(h.rule_id for h in overall_decision.policy_hits),
+                policy_version=policy_version,
+                mode=mode,
+                degraded=overall_decision.degraded,
+            )
             denied = DeniedResponse(
                 risk_level=overall_risk_level,
                 reason_codes=list(overall_decision.reason_codes),
@@ -654,6 +965,21 @@ def register_routes(app: FastAPI) -> None:
                     **final_choices[0],
                     "message": {**final_message, "content": guard_result.sanitized_content},
                 }
+
+        _audit_decision(
+            state,
+            transaction_id=txn_id,
+            correlation_id=request.state.correlation_id,
+            identity_id=identity.identity_id,
+            verdict=overall_decision.verdict,
+            risk_level=overall_risk_level,
+            transformation=overall_decision.transformation,
+            reason_codes=overall_decision.reason_codes,
+            policy_hits=tuple(h.rule_id for h in overall_decision.policy_hits),
+            policy_version=policy_version,
+            mode=mode,
+            degraded=overall_decision.degraded,
+        )
 
         # ADR 0002: the completion fields go at the TOP LEVEL (unpacked from
         # upstream_response), not nested under a `response` key — required
@@ -731,6 +1057,29 @@ def register_routes(app: FastAPI) -> None:
             ),
         )
 
+    @app.get("/metrics")
+    async def metrics_endpoint(request: Request) -> Response:
+        """SPEC.md §2.16, §4.7, OBS-001, API-017. Prometheus text
+        exposition. API-017: "MAY require a service key when
+        METRICS_REQUIRE_AUTH=true, which MUST default to true in
+        production" (`app/config.py` already fails startup if production
+        leaves it false). When `False` (the non-production default), the
+        endpoint is open — no identity check at all, regardless of whether
+        keys happen to be configured, matching the setting's own literal
+        wording ("MAY require... when METRICS_REQUIRE_AUTH=true"). When
+        `True`, any recognized key of *either* class is accepted:
+        SPEC.md §11.1's table explicitly lists `/metrics` under Service's
+        allowed endpoints and leaves Reviewer's "may NOT call" column empty
+        for it — read permissively rather than inventing an undocumented
+        restriction (see docs/adr/0008)."""
+        state: AppState = app.state.rg
+        if state.settings.METRICS_REQUIRE_AUTH:
+            resolve_identity(request.headers.get("Authorization"), state.settings)
+        return PlainTextResponse(
+            generate_latest(state.metrics.registry).decode("utf-8"),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
     @app.get("/v1/firewall/requests/{transaction_or_request_id}")
     async def get_transaction_status(transaction_or_request_id: str, request: Request) -> Response:
         """SPEC.md §4.5. API-011: a cross-identity read returns 404, not
@@ -738,7 +1087,7 @@ def register_routes(app: FastAPI) -> None:
         exists."""
         state: AppState = app.state.rg
         identity = resolve_identity(request.headers.get("Authorization"), state.settings)
-        sweep_expired(state.db_engine)
+        sweep_expired(state.db_engine, metrics=state.metrics)
 
         txn = get_transaction(state.db_engine, transaction_or_request_id)
         if txn is None or (
@@ -770,7 +1119,7 @@ def register_routes(app: FastAPI) -> None:
         state: AppState = app.state.rg
         identity = resolve_identity(request.headers.get("Authorization"), state.settings)
         require_reviewer(identity)
-        sweep_expired(state.db_engine)
+        sweep_expired(state.db_engine, metrics=state.metrics)
 
         limit = max(1, min(limit, 200))
         rows, next_cursor = list_approvals(
@@ -846,6 +1195,7 @@ def register_routes(app: FastAPI) -> None:
             salt=state.settings.effective_hash_salt(),
             detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
             retain_response_content=state.settings.CONTENT_RETENTION.value in ("full", "encrypted"),
+            metrics=state.metrics,
         )
 
         payload = ApprovalDecisionResponse(

@@ -48,6 +48,28 @@ COPY --from=builder /opt/venv /opt/venv
 COPY app ./app
 COPY policies ./policies
 
+# WS-17 (Phase 6, ADR 0008): a real Trivy scan of this image found two HIGH
+# findings (GHSA-6v7p-g79w-8964, CVE-2025-47273) that trace to *pip itself*
+# — not to real-guard-v1's dependency tree at all (`pip show msgpack` finds
+# nothing; neither is a project dependency). pip vendors its own copies of
+# msgpack and setuptools (see `pip/_vendor/vendor.txt`) for its own internal
+# use while resolving/installing packages; both the base image's
+# system-level pip and the venv's own copy (upgraded by `pip install
+# --upgrade pip` above) carry them. pip serves no purpose in a running
+# container — dependencies are already installed by the time this image
+# runs — so removing every copy of it (system and venv) removes both
+# findings entirely, verified by re-scanning the built image (docs/adr/0008
+# has the before/after counts).
+RUN rm -rf /usr/local/lib/python3.12/site-packages/pip \
+    /usr/local/lib/python3.12/site-packages/pip-*.dist-info \
+    /usr/local/lib/python3.12/site-packages/setuptools \
+    /usr/local/lib/python3.12/site-packages/setuptools-*.dist-info \
+    /usr/local/lib/python3.12/site-packages/pkg_resources \
+    /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.* \
+    /opt/venv/lib/python3.12/site-packages/pip \
+    /opt/venv/lib/python3.12/site-packages/pip-*.dist-info \
+    /opt/venv/bin/pip /opt/venv/bin/pip3 /opt/venv/bin/pip3.*
+
 # DATABASE_URL defaults to sqlite:///./data/realguard.db (app/config.py) —
 # relative to the process's CWD, /app here. Created and owned by the
 # unprivileged runtime user up front; docker-compose.yml mounts a named

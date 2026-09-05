@@ -177,7 +177,16 @@ def evaluate_policy(
 
     for rule in policy.rules:
         if "rate_limit" in rule:
-            continue  # WS-13 (Phase 6) — not evaluated by the decision engine
+            # WS-13 (Phase 6, ADR 0008): rate limiting is real now
+            # (app/ratelimit.py, called from app/main.py before this
+            # decision engine ever runs), but deliberately not through this
+            # generic condition evaluator — it has no "requests observed in
+            # this window" fact to evaluate a rule's `when` against, and
+            # never will (enforcement is a stateful, per-request database
+            # operation, not a pure function of one request's findings).
+            # `rate_limit_config_from_policy()` reads this same rule's
+            # `requests`/`window_seconds`/`scope` directly.
+            continue
 
         condition = rule.get("when")
         if condition is None:

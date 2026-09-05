@@ -60,15 +60,29 @@ def resolve_identity(authorization_header: str | None, settings: Settings) -> Id
     header. SEC-009: only the presented key is authoritative — no
     client-supplied header is ever trusted as identity.
 
-    Returns the anonymous dev-mode fallback only when no header was
-    presented *and* no keys of either class are configured — the same
-    condition CFG-002/SEC-003 already requires for unauthenticated
-    operation (loopback bind, non-production), so this function never needs
-    to re-check environment/bind-host itself.
+    Returns the anonymous dev-mode fallback whenever no keys of either class
+    are configured — the same condition CFG-002/SEC-003 already requires
+    for unauthenticated operation (loopback bind, non-production), so this
+    function never needs to re-check environment/bind-host itself.
+
+    Phase 6 (WS-13, ADR 0008): this fallback now applies even when a header
+    *is* presented, not only when one is absent. Before Phase 6,
+    `resolve_identity()` was only ever reached (for the ALLOW/DENY verdicts)
+    from the `NEED_APPROVAL` branch of `app/main.py`'s handler — moving the
+    call to the top of every request (so the rate limiter has an identity
+    to scope by) surfaced a latent inconsistency: a client presenting *any*
+    placeholder bearer token (an unmodified `openai` SDK always sends one;
+    it has no concept of "no credential") would get `INVALID_AUTHENTICATION`
+    in dev mode purely because that code path had never been exercised for
+    ALLOW before. When zero keys of either class are configured, there is
+    nothing a presented token could be validated against — rejecting it
+    protects nothing SEC-003 doesn't already gate at the loopback/bind
+    level, so it is treated identically to no header at all.
     """
+    if not settings.service_keys and not settings.reviewer_keys:
+        return Identity(IdentityClass.SERVICE, ANONYMOUS_DEV_IDENTITY)
+
     if authorization_header is None:
-        if not settings.service_keys and not settings.reviewer_keys:
-            return Identity(IdentityClass.SERVICE, ANONYMOUS_DEV_IDENTITY)
         raise FirewallError(ErrorCode.INVALID_AUTHENTICATION, "Missing Authorization header.")
 
     scheme, _, token = authorization_header.partition(" ")

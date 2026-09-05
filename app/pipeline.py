@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.decision import Decision, combine_decisions, evaluate_policy
 from app.detectors.base import Detector, Finding
@@ -30,6 +30,9 @@ from app.orchestrator import DetectorOrchestrator
 from app.planes import Plane
 from app.policy import Policy
 from app.risk import RiskAssessment, aggregate_risk
+
+if TYPE_CHECKING:
+    from app.metrics import Metrics
 
 # SYS-004: role -> plane. user/system are the operator's and the live
 # caller's own words (Input); assistant/tool carry replayed or
@@ -115,8 +118,11 @@ async def run_input_pipeline(
     salt: str,
     detector_timeout_ms: int = 250,
     tools: list[dict[str, Any]] | None = None,
+    metrics: Metrics | None = None,
 ) -> PipelineResult:
-    orchestrator = DetectorOrchestrator(detectors, detector_timeout_ms=detector_timeout_ms)
+    orchestrator = DetectorOrchestrator(
+        detectors, detector_timeout_ms=detector_timeout_ms, metrics=metrics
+    )
     findings_by_plane: dict[Plane, list[Finding]] = {
         Plane.input: [],
         Plane.context: [],
@@ -145,9 +151,14 @@ async def run_input_pipeline(
         tool_detector = ToolCallsDetector(policy)
         for name, arguments in candidates:
             try:
-                findings_by_plane[Plane.action].extend(
-                    tool_detector.scan_tool_call(name, arguments, salt)
-                )
+                tool_findings = tool_detector.scan_tool_call(name, arguments, salt)
+                findings_by_plane[Plane.action].extend(tool_findings)
+                if metrics is not None:
+                    bounded_name = metrics.bounded_tool_name(name)
+                    for f in tool_findings:
+                        metrics.tool_findings_total.labels(
+                            tool_name=bounded_name, category=f.category.value
+                        ).inc()
             except Exception:  # noqa: BLE001 — DET-014: isolate, never propagate
                 degraded = True
 

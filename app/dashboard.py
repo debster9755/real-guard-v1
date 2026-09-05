@@ -211,7 +211,7 @@ def register_dashboard_routes(app: FastAPI) -> None:
                 )
             readonly = True  # bearer-key access: view-only, no session to bind CSRF to
 
-        sweep_expired(state.db_engine)
+        sweep_expired(state.db_engine, metrics=state.metrics)
         status_filter = status.upper()
         rows, _next_cursor = list_approvals(
             state.db_engine, statuses=[status_filter], limit=200, cursor=None
@@ -318,6 +318,7 @@ def register_dashboard_routes(app: FastAPI) -> None:
                 detector_timeout_ms=state.settings.DETECTOR_TIMEOUT_MS,
                 retain_response_content=state.settings.CONTENT_RETENTION.value
                 in ("full", "encrypted"),
+                metrics=state.metrics,
             )
         except FirewallError as e:
             html = render_decision_fragment(approval_id=approval_id, error=e.message)

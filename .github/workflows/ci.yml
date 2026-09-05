@@ -50,6 +50,47 @@ jobs:
           name: coverage-xml
           path: coverage.xml
 
-  # README-command extraction, security-scan and benchmark jobs are added
-  # in their owning phases (WS-16 / Phase 8, WS-17 / Phase 6) rather than
-  # stubbed out now — an empty job that always passes is not a real check.
+  # Phase 6 / WS-17 (docs/adr/0008-phase6-rate-limiting-metrics-and-security-scanning.md):
+  # pip-audit against the production dependency set, and Trivy against the
+  # actual built image — both run for real against this repository during
+  # that ADR's own writing (not assumed to pass), which is how the
+  # Dockerfile fix two steps below (removing pip's own vendored copies of
+  # msgpack/setuptools, neither a real-guard-v1 dependency) was found.
+  security:
+    name: security (pip-audit, Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: pip-audit against the production dependency set only
+        # Deliberately `pip install .` (base deps), never `.[dev]` — the
+        # same set the Dockerfile's runtime image actually ships. A dev-only
+        # tool vulnerability (e.g. pytest's own advisories) would fail this
+        # step for no reason a production deployment could act on.
+        run: |
+          python -m venv /tmp/prod-only-venv
+          /tmp/prod-only-venv/bin/pip install --quiet --upgrade pip
+          /tmp/prod-only-venv/bin/pip install --quiet .
+          /tmp/prod-only-venv/bin/pip install --quiet pip-audit
+          /tmp/prod-only-venv/bin/pip-audit
+
+      - name: Build the runtime image
+        run: docker build -t real-guard-v1:ci-scan .
+
+      - name: Trivy image scan (fixable HIGH/CRITICAL only)
+        # `--ignore-unfixed`: a handful of the pinned Debian base image's OS
+        # packages carry HIGH/CRITICAL CVEs with no upstream fix available
+        # yet (verified against the latest published `python:3.12-slim`
+        # digest at the time ADR 0008 was written) — failing CI on a
+        # vulnerability nothing in this repository can act on would make
+        # the check permanently red through no fault of any future change.
+        # Every *fixable* HIGH/CRITICAL finding still fails the build.
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image --severity HIGH,CRITICAL \
+            --ignore-unfixed --exit-code 1 real-guard-v1:ci-scan

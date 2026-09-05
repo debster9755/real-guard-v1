@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.detectors.base import Category, Confidence, Detector, Finding
 from app.normalizer import NormalizedContent
 from app.planes import Plane
+
+if TYPE_CHECKING:
+    from app.metrics import Metrics
 
 logger = logging.getLogger("realguard.orchestrator")
 
@@ -38,12 +43,22 @@ class OrchestratorResult:
 
 
 async def _run_one(
-    detector: Detector, content: NormalizedContent, plane: Plane, salt: str, timeout_s: float
+    detector: Detector,
+    content: NormalizedContent,
+    plane: Plane,
+    salt: str,
+    timeout_s: float,
+    metrics: Metrics | None,
 ) -> tuple[DetectorExecutionReport, list[Finding]]:
+    t0 = time.perf_counter()
     try:
         findings = await asyncio.wait_for(
             asyncio.to_thread(detector.scan, content, plane, salt), timeout=timeout_s
         )
+        if metrics is not None:
+            metrics.detector_duration_seconds.labels(detector_id=detector.detector_id).observe(
+                time.perf_counter() - t0
+            )
         return (
             DetectorExecutionReport(detector.detector_id, detector.detector_version, ok=True),
             findings,
@@ -52,6 +67,13 @@ async def _run_one(
         # POL-007: DET-012's deadline exceeded MUST produce a DETECTOR_TIMEOUT
         # finding and MUST NOT abort the others (DET-013/014).
         logger.warning("detector timed out", extra={"detector_id": detector.detector_id})
+        if metrics is not None:
+            metrics.detector_duration_seconds.labels(detector_id=detector.detector_id).observe(
+                time.perf_counter() - t0
+            )
+            metrics.detector_failures_total.labels(
+                detector_id=detector.detector_id, reason="timeout"
+            ).inc()
         timeout_finding = Finding(
             detector_id=detector.detector_id,
             detector_version=detector.detector_version,
@@ -74,6 +96,13 @@ async def _run_one(
             "detector raised",
             extra={"detector_id": detector.detector_id, "error_type": type(e).__name__},
         )
+        if metrics is not None:
+            metrics.detector_duration_seconds.labels(detector_id=detector.detector_id).observe(
+                time.perf_counter() - t0
+            )
+            metrics.detector_failures_total.labels(
+                detector_id=detector.detector_id, reason="exception"
+            ).inc()
         return (
             DetectorExecutionReport(
                 detector.detector_id,
@@ -86,9 +115,16 @@ async def _run_one(
 
 
 class DetectorOrchestrator:
-    def __init__(self, detectors: list[Detector], *, detector_timeout_ms: int = 250) -> None:
+    def __init__(
+        self,
+        detectors: list[Detector],
+        *,
+        detector_timeout_ms: int = 250,
+        metrics: Metrics | None = None,
+    ) -> None:
         self._detectors = detectors
         self._timeout_s = detector_timeout_ms / 1000
+        self._metrics = metrics
 
     async def run(self, content: NormalizedContent, plane: Plane, salt: str) -> OrchestratorResult:
         applicable = [d for d in self._detectors if plane in d.supported_planes]
@@ -96,7 +132,7 @@ class DetectorOrchestrator:
             return OrchestratorResult(findings=())
 
         results = await asyncio.gather(
-            *(_run_one(d, content, plane, salt, self._timeout_s) for d in applicable)
+            *(_run_one(d, content, plane, salt, self._timeout_s, self._metrics) for d in applicable)
         )
 
         all_findings: list[Finding] = []

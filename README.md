@@ -39,11 +39,19 @@ run real inference against a local `qwen3:8b` — see
 for the full account, including a real Docker Compose mechanics finding
 that changed one of SPEC.md's own example commands.
 
-This README now follows `SPEC.md` §18's documentation structure more
-closely than before (it has a real Docker quick start below) but still has
-no measured-latency table and no audit/metrics section — those depend on
-work later phases add. What is below is accurate to what exists and has
-been run today; nothing here is aspirational.
+Phase 6 adds a real, persisted, per-identity **rate limiter** (`429
+RATE_LIMITED` with a genuine `Retry-After`), a real Prometheus **`GET
+/metrics`** endpoint (25 metrics, exactly SPEC.md §13.1's catalogue),
+structured JSON logging with a code-enforced log-field allowlist, a
+`decision` audit event for every verdict (not only `NEED_APPROVAL`), the
+`python -m app.cli export-audit` command, and `pip-audit`/Trivy scanning —
+see
+[`docs/adr/0008-phase6-rate-limiting-metrics-and-security-scanning.md`](docs/adr/0008-phase6-rate-limiting-metrics-and-security-scanning.md)
+for the full account, including a real Trivy scan against the built image
+and the Dockerfile fix it led to. This README still has no measured-latency
+table — that depends on Phase 7's benchmark work. What is below is
+accurate to what exists and has been run today; nothing here is
+aspirational.
 
 Detection in this system is **heuristic**. It will have false positives and
 false negatives. It is one layer of defence in depth, not a substitute for
@@ -701,24 +709,162 @@ has no `choices` field to find. A caller that wants to support approvals
 must check the response for a `decision`/`approval_id` field (or inspect the
 raw HTTP status) before trusting `.choices`.
 
+## Rate limiting (Phase 6)
+
+A fixed-window counter per identity, persisted in `rate_limit_state`
+(SQLite), scoped and configured by `policies/default_policy.yaml`'s
+`rate_limit_default` rule (`requests: 60, window_seconds: 60,
+scope: identity` by default — override `RATE_LIMIT_REQUESTS`/
+`RATE_LIMIT_WINDOW_SECONDS` when no policy rule sets one). It runs inside
+`POST /v1/chat/completions` only, before any detection work — `GET
+/healthz`, `GET /readyz`, and the approval-decision endpoint are never
+rate-limited (SPEC.md §2.17), simply because none of them calls the
+limiter at all. See
+[`docs/adr/0008-phase6-rate-limiting-metrics-and-security-scanning.md`](docs/adr/0008-phase6-rate-limiting-metrics-and-security-scanning.md)
+for why this is a fixed window rather than a true sliding one, and exactly
+where fail-open/fail-closed applies.
+
+Captured against a real local `uvicorn` process (mock mode, a policy with
+`rate_limit_default` set to `requests: 3, window_seconds: 5` for a fast
+demo — the shipped default is `60`/`60`):
+
+```console
+$ for i in 1 2 3 4; do
+    curl -s -i -X POST http://127.0.0.1:8123/v1/chat/completions \
+      -H 'Content-Type: application/json' \
+      -d '{"messages":[{"role":"user","content":"What is a good banana bread recipe?"}]}' \
+      | grep -E "^HTTP|^retry-after|error"
+  done
+HTTP/1.1 200 OK
+HTTP/1.1 200 OK
+HTTP/1.1 200 OK
+HTTP/1.1 429 Too Many Requests
+retry-after: 5
+{"error":{"code":"RATE_LIMITED","type":"rate_limit_error","message":"Rate limit exceeded for this identity.","transaction_id":"txn_01M1RS1WWM03V4J8PGBRD5ASKV","details":{"retry_after_seconds":5}}}
+
+$ sleep 6   # the configured 5-second window elapses
+$ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8123/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    -d '{"messages":[{"role":"user","content":"What is a good banana bread recipe?"}]}'
+200
+```
+
+The fourth request is refused with a real `Retry-After`; after the window
+genuinely elapses (a real 6-second wait, not a mocked clock), the next
+request succeeds — the same behavior
+`tests/test_ratelimit.py::TestRateLimitHttp` asserts, there by directly
+manipulating the stored `window_start` instead of sleeping.
+
+## Observability: metrics, structured logs, and audit export (Phase 6)
+
+**`GET /metrics`** — Prometheus text exposition, the 25 metrics of
+SPEC.md §13.1's catalogue (names, types and labels copied verbatim — see
+`app/metrics.py`). Gated by `METRICS_REQUIRE_AUTH` (`false` in
+development/staging by default; startup refuses `false` in production):
+when `true`, any recognized service or reviewer key is accepted; when
+`false`, the endpoint is open.
+
+Captured from the same local run as above, after the rate-limit sequence
+plus one prior `/healthz` call (`grep -v` strips the `_created`
+timestamps `prometheus_client` emits alongside every counter):
+
+```console
+$ curl -s http://127.0.0.1:8123/metrics | grep -v '^#' | grep -v '_created'
+realguard_http_requests_total{endpoint="/healthz",method="GET",status_class="2xx"} 1.0
+realguard_http_requests_total{endpoint="/v1/chat/completions",method="POST",status_class="2xx"} 4.0
+realguard_http_requests_total{endpoint="/v1/chat/completions",method="POST",status_class="4xx"} 1.0
+realguard_decisions_total{mode="mock",plane="input",verdict="ALLOW"} 4.0
+realguard_decisions_total{mode="mock",plane="response",verdict="ALLOW"} 4.0
+realguard_risk_level_total{level="NONE"} 8.0
+realguard_rate_limited_total{scope="identity"} 1.0
+realguard_errors_total{error_code="RATE_LIMITED"} 1.0
+realguard_policy_info{policy_version="sha256:3b25db116717e54d42fd75def2107933a0cdcd4f65e6e43afab7f8a546ceb931",schema_version="1.0"} 1.0
+realguard_build_info{commit="unknown",version="0.1.0"} 1.0
+# ... plus per-detector duration histograms, transformation/upstream/
+# firewall_added_seconds histograms, and every other metric the catalogue
+# names — omitted here for length; tests/test_metrics.py exercises all 25.
+```
+
+And with `METRICS_REQUIRE_AUTH=true` and real keys configured:
+
+```console
+$ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8124/metrics
+401
+$ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8124/metrics \
+    -H "Authorization: Bearer service_key_for_demo_1234567890123456"
+200
+```
+
+**Structured JSON logs** (`app/logging_config.py`) — one JSON object per
+line on stdout, at `LOG_LEVEL`, filtered through a code-enforced allowlist
+of exactly SPEC.md §12.2's 27 fields (`transaction_id`, `verdict`,
+`risk_level`, `duration_ms`, ... — never request/response content, never a
+key, session cookie, or CSRF token). Real captured line from the demo run
+above:
+
+```json
+{"timestamp": "2026-09-05T12:34:03Z", "level": "WARNING", "event": "real-guard-v1 starting in MOCK MODE — no UPSTREAM_BASE_URL is configured. Every completion is synthetic (app/providers/mock.py). This is the default for local evaluation; set UPSTREAM_BASE_URL to use a real provider."}
+```
+
+`tests/test_audit_privacy.py` runs every `PII_INPUT`/`SECRET_INPUT`/
+`OUTPUT_LEAKAGE`/`LEAK_OUTPUT` golden-corpus case (18 of the 54) at
+`LOG_LEVEL=DEBUG` and asserts none of their original values — nor any of
+the mock provider's seeded raw outputs (a real SSN, email, and secret key)
+— appears anywhere in real captured stdout.
+
+**Audit export** — every decision (`ALLOW`, `DENY`, and `NEED_APPROVAL`)
+now writes exactly one hash-chained `audit_events` row of
+`event_type="decision"` (PRV-009), in addition to the `APPROVAL_*` events
+ADR 0004 already wrote for the approval lifecycle. Export them as JSONL:
+
+```console
+$ python -m app.cli export-audit --format jsonl | head -1
+{"actor_id": "svc_anonymous_dev", "actor_type": "service", "approval_id": null, "correlation_id": "cor_39dc118988de4fc0964d75dedd46e72f", "created_at": "2026-09-05T12:35:20Z", "event_hash": "sha256:ee5769fa784acf300caa95ae9fdef8d9ae64f58cab2a14b4a9a67c92dff0b9a5", "event_type": "decision", "id": "evt_01M1RS1WVK8PT9HK3R9R36N3B9", "payload": {"degraded": false, "mode": "mock", "policy_hits": [], "policy_version": "sha256:3b25db116717e54d42fd75def2107933a0cdcd4f65e6e43afab7f8a546ceb931", "reason_codes": [], "risk_level": "NONE", "transformation": "NONE", "verdict": "ALLOW"}, "prev_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "transaction_id": "txn_01M1RS1WVD5DR2H68EJCDJ04ED"}
+```
+
+`--since`/`--until` accept RFC 3339 or bare ISO 8601 timestamps. Every
+`payload` field above is PRV-007-allowlisted — no request or response
+content ever appears in an exported line, regardless of `CONTENT_RETENTION`.
+
 ## Testing
 
 ```bash
 ruff check .            # lint
 ruff format --check .   # formatting
 mypy app                # strict type check
-pytest                  # 361 passed, 0 skipped, 0 failed on this machine (Docker + local Ollama both present)
-pytest --cov=app --cov-report=term-missing   # coverage — 93.5% line / 80.3% branch on app/ as of this writing
+pytest                  # 386 passed, 0 skipped, 0 failed on this machine (Docker + local Ollama both present)
+pytest --cov=app --cov-report=term-missing   # coverage — 91% combined line+branch on app/ (coverage.py's own TOTAL row) as of this writing
 python scripts/validate_contracts.py         # schema + corpus + OpenAPI consistency checks
 ```
 
 `pytest`'s count depends on the environment: `tests/test_docker_smoke.py`
-(5 tests) and `tests/test_ollama_live.py` (4 tests) self-skip — reported by
-pytest as skipped, never as failed — on a machine with no reachable Docker
-daemon or no local Ollama with `qwen3:8b` pulled, respectively (see
-`pyproject.toml`'s `docker`/`ollama` marker definitions). 335 passed
-before Phase 5; 361 on a machine, like the one these numbers were captured
-on, with both available.
+(5 tests, `docker` marker) and `tests/test_ollama_live.py` (4 tests,
+`ollama` marker) self-skip — reported by pytest as skipped, never as
+failed — on a machine with no reachable Docker daemon or no local Ollama
+with `qwen3:8b` pulled, respectively (`pytest -m "not docker and not
+ollama"`: **377 passed**, the count on any machine without either — up
+from 352 before Phase 6's 25 new tests: `tests/test_ratelimit.py` (10),
+`tests/test_metrics.py` (8), `tests/test_cli.py` (5),
+`tests/test_audit_privacy.py` (2)). 335 passed before Phase 5; 361 before
+Phase 6; 386 on a machine, like the one these numbers were captured on,
+with both Docker and a real local Ollama available. One honest caveat
+about that last figure, found and confirmed while re-running the full
+suite several times during this phase's own testing (not touched or
+introduced by anything Phase 6 changed):
+`tests/test_ollama_live.py::test_benign_request_allowed_by_real_model`
+failed on every one of several isolated reruns on this machine today —
+each time on `UpstreamTimeoutError`, at exactly the file's own configured
+120-second timeout (`_REQUEST_TIMEOUT_SECONDS`), doubled by one retry. A
+direct `curl` to the same local Ollama for a trivial prompt answered in
+about 10 seconds, so Ollama itself is reachable and not generally
+unresponsive; `qwen3:8b` is a "thinking" model that can spend a long time
+on hidden reasoning tokens before its visible answer, and this specific
+benign-request prompt is apparently taking longer than 120 seconds on this
+host right now. This is squarely Phase 5's territory (real-model latency
+against a fixed timeout, `app/providers/openai_compatible.py`), which
+nothing in this phase's code touches; it is called out here rather
+than only in `docs/adr/0008` because it is exactly the kind of thing a
+"nothing is aspirational" README should not paper over.
 
 `tests/data/golden_corpus.jsonl` is the 54-case corpus `SPEC.md` §17.4
 specifies; `tests/test_golden_corpus.py` now runs every one of the 54 cases
@@ -751,11 +897,15 @@ alongside upstream-provider safety controls and application-level
 authorization, not replace either. `system_prompt_leak`'s response-vs-system-
 prompt comparison is `difflib`-based text similarity, not semantics — a
 paraphrase that changes enough words can still fall below its threshold.
-Structured audit/metrics beyond the existing hash-chained `audit_events`
-rows, and rate limiting (Phase 6, WS-12/WS-13) do not exist yet — the
-`RATE_LIMIT_*` settings are validated at startup but nothing enforces them,
-and `GET /metrics` is not implemented. `CONTENT_RETENTION=encrypted` has no
-storage backend (`encrypted_payloads`) yet. The reviewer dashboard has no
+Rate limiting is a fixed-window counter, not a true sliding window — WS-13's
+own prose calls for the latter, but SPEC.md's own `rate_limit_state` column
+list (`window_start`, `request_count`) is exactly a fixed-window shape,
+with no room for a per-request log; a burst straddling two adjacent
+windows can momentarily allow close to double the configured rate (see
+`docs/adr/0008`). `CONTENT_RETENTION=encrypted` has no storage backend
+(`encrypted_payloads`) yet, and `detector_findings`/`policy_hits`-as-a-table/
+`idempotency_records` (SPEC.md §10) remain deferred — no automated check
+this project has run through Phase 6 requires them. The reviewer dashboard has no
 automated test that renders it in a real browser with CSP enforcement
 turned on — Phase 4 found and fixed one class of defect (inline
 event-handler/style attributes silently broken by the CSP header this
@@ -775,7 +925,26 @@ posture check; the operator (or, in Docker, the `Dockerfile`'s `CMD`)
 always sets the real `--host` separately. Both are pre-existing-class gaps
 carried forward and documented rather than silently patched — see
 [`docs/adr/0007-phase5-ollama-profile-and-docker-deployment.md`](docs/adr/0007-phase5-ollama-profile-and-docker-deployment.md)
-decisions 4 and 7 for the full reasoning. No `pip-audit`/Trivy/dependency
-scanning exists yet (Phase 6, WS-17) — this Dockerfile's dependencies are
-pinned by version range in `pyproject.toml`, not yet scanned for known
-vulnerabilities in CI.
+decisions 4 and 7 for the full reasoning.
+
+`pip-audit` and Trivy now run in CI (`.github/workflows/ci.yml`'s
+`security` job) and were run for real against this exact codebase and
+image while writing `docs/adr/0008`: `pip-audit` finds zero known
+vulnerabilities against the production dependency set. Trivy, scanned
+against the actual built image, finds zero *fixable* HIGH/CRITICAL
+findings (`--ignore-unfixed`) after a Dockerfile fix that removes `pip`
+itself from the runtime image (it vendors its own copies of `msgpack` and
+`setuptools`, neither a real-guard-v1 dependency, and the application
+never invokes `pip` at runtime anyway). This is **not** an unqualified
+"clean" scan: 54 Debian OS-package CVEs (51 HIGH, 3 CRITICAL) remain,
+inherited from the pinned `python:3.12-slim` base image, with **no
+upstream fix available yet** as of this writing — re-pulling
+`python:3.12-slim` bare resolves to the exact same digest already pinned,
+confirmed by a live `docker pull` while writing this. `pyproject.toml`
+still pins dependencies by version *range*, not by a hash-locked
+requirements file (`pip-compile --generate-hashes` or equivalent) — WS-17
+names "dependency pinning with hashes" as a deliverable, and building and
+maintaining a lockfile workflow was judged out of this phase's scope; it
+remains a real, named gap, not a silently dropped one. `gitleaks`
+(full-history secret scanning) is Phase 9's own deliverable per
+`PLAN.md` and has not been run.

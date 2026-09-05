@@ -16,7 +16,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.decision import Decision, evaluate_policy
 from app.detectors.base import Detector, Finding
@@ -30,6 +30,9 @@ from app.planes import Plane
 from app.policy import Policy
 from app.risk import RiskAssessment, aggregate_risk
 from app.transform import apply_transformations
+
+if TYPE_CHECKING:
+    from app.metrics import Metrics
 
 
 def build_output_detectors(policy: Policy) -> list[Detector]:
@@ -103,6 +106,7 @@ async def run_output_guard(
     salt: str,
     detector_timeout_ms: int = 250,
     upstream_response: dict[str, Any] | None = None,
+    metrics: Metrics | None = None,
 ) -> OutputGuardResult:
     """SPEC.md §2.11: runs Response-plane detectors (`pii`, `secrets`,
     `system_prompt_leak`) against `response_content`, and — when
@@ -127,7 +131,9 @@ async def run_output_guard(
     system_prompt_detector = build_system_prompt_leak_detector(policy)
 
     normalized = normalize(response_content)
-    orchestrator = DetectorOrchestrator(output_detectors, detector_timeout_ms=detector_timeout_ms)
+    orchestrator = DetectorOrchestrator(
+        output_detectors, detector_timeout_ms=detector_timeout_ms, metrics=metrics
+    )
     orch_result = await orchestrator.run(normalized, Plane.response, salt)
     findings: list[Finding] = list(orch_result.findings)
     degraded = orch_result.degraded
@@ -145,9 +151,16 @@ async def run_output_guard(
             name, raw_arguments = candidate
             tool_detector = ToolCallsDetector(policy)
             try:
-                findings.extend(
-                    tool_detector.scan_tool_call(name, None, salt, raw_arguments=raw_arguments)
+                tool_findings = tool_detector.scan_tool_call(
+                    name, None, salt, raw_arguments=raw_arguments
                 )
+                findings.extend(tool_findings)
+                if metrics is not None:
+                    bounded_name = metrics.bounded_tool_name(name)
+                    for f in tool_findings:
+                        metrics.tool_findings_total.labels(
+                            tool_name=bounded_name, category=f.category.value
+                        ).inc()
                 # Only feed structured tool_name/tool_arguments into
                 # evaluate_policy() when the arguments actually parsed —
                 # DET-018's SCHEMA_VIOLATION finding above already records a
@@ -185,6 +198,9 @@ async def run_output_guard(
         # ALLOW, and never invent hold-for-review semantics SPEC.md doesn't
         # specify for this plane.
         decision = dataclasses.replace(decision, verdict="DENY", transformation="NONE")
+
+    if metrics is not None:
+        metrics.output_decisions_total.labels(verdict=decision.verdict).inc()
 
     sanitized = response_content
     if decision.verdict == "ALLOW" and decision.transformation != "NONE":

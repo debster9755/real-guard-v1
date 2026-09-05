@@ -28,9 +28,9 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, func
 from sqlalchemy.orm import Session
 
 from app.auth import Identity
@@ -47,6 +47,35 @@ from app.materialargs import compute_material_args_hash
 from app.outputguard import run_output_guard, system_prompt_text_from_messages
 from app.policy import Policy
 from app.providers.base import Provider
+
+if TYPE_CHECKING:
+    from app.metrics import Metrics
+
+# SPEC.md §9.1 — every state `realguard_approval_queue_depth` (OBS-012:
+# Phase 6/WS-12) reports a live count for.
+APPROVAL_STATES: tuple[str, ...] = (
+    "PENDING",
+    "APPROVED",
+    "RESUMING",
+    "DENIED",
+    "EXPIRED",
+    "CANCELLED",
+    "COMPLETED",
+    "FAILED",
+)
+
+
+def count_by_state(engine: Engine, state: str) -> int:
+    """Backs each `realguard_approval_queue_depth{state=...}` gauge via
+    `Gauge.labels(...).set_function()` — computed live at scrape time
+    (app/main.py's `AppState`), so it can never drift from the database the
+    way a push-updated counter could if a code path forgot to update it."""
+    with Session(engine) as session:
+        return int(
+            session.query(func.count(ApprovalRow.id)).filter(ApprovalRow.state == state).scalar()
+            or 0
+        )
+
 
 _GENESIS_HASH = "sha256:" + hashlib.sha256(b"").hexdigest()
 
@@ -172,6 +201,7 @@ def create_approval(
     ttl_seconds: int,
     retain_raw_content: bool,
     raw_request_content: dict[str, Any] | None,
+    metrics: Metrics | None = None,
 ) -> ApprovalCreationResult:
     """APR-005: durably persisted *before* the caller returns 202. Runs
     under BEGIN IMMEDIATE even though there is no prior row to race on here
@@ -232,6 +262,8 @@ def create_approval(
                 "creator_identity_id": creator_identity_id,
             },
         )
+        if metrics is not None:
+            metrics.approvals_total.labels(state="PENDING").inc()
         return ApprovalCreationResult(approval=approval, transaction=txn)
 
 
@@ -305,6 +337,7 @@ async def decide_and_resume(
     salt: str,
     detector_timeout_ms: int,
     retain_response_content: bool,
+    metrics: Metrics | None = None,
 ) -> DecideAndResumeResult:
     """The orchestration `POST /v1/firewall/approvals/{id}/decision`
     (`app/main.py`) and the dashboard's own decision route
@@ -316,16 +349,33 @@ async def decide_and_resume(
     "one function decides" preference (see ADR 0005 §4 for the same
     reasoning applied to `combine_decisions()`).
     """
-    sweep_expired(engine)
-    result = decide_approval(
-        engine,
-        approval_id,
-        decision=decision,
-        note=note,
-        reviewer_identity=reviewer_identity,
-        idempotency_key=idempotency_key,
-        correlation_id=correlation_id,
-    )
+    sweep_expired(engine, metrics=metrics)
+    try:
+        result = decide_approval(
+            engine,
+            approval_id,
+            decision=decision,
+            note=note,
+            reviewer_identity=reviewer_identity,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+        )
+    except FirewallError as e:
+        if metrics is not None and e.code == ErrorCode.APPROVAL_EXPIRED:
+            # decide_approval() itself flipped PENDING -> EXPIRED just now
+            # (APR-007/008 "expiry enforced at decision time").
+            metrics.approvals_total.labels(state="EXPIRED").inc()
+            metrics.upstream_calls_avoided_total.labels(verdict="NEED_APPROVAL").inc()
+        raise
+
+    if metrics is not None and result.outcome == DecisionOutcome.APPLIED:
+        metrics.approvals_total.labels(state=result.approval.state).inc()
+        metrics.approval_wait_seconds.observe(
+            (result.decision_row.created_at - result.approval.created_at).total_seconds()
+        )
+        if result.approval.state == "DENIED":
+            metrics.upstream_calls_avoided_total.labels(verdict="NEED_APPROVAL").inc()
+
     if result.outcome == DecisionOutcome.APPLIED and result.approval.state == "APPROVED":
         # POL-009: the same "no cached policy -> 503" guard the gateway
         # applies before every input-pipeline evaluation.
@@ -334,7 +384,7 @@ async def decide_and_resume(
                 ErrorCode.POLICY_UNAVAILABLE,
                 "The policy engine is unavailable and no cached policy exists.",
             )
-        await resume_approved(
+        outcome = await resume_approved(
             engine,
             approval_id,
             provider=provider,
@@ -343,6 +393,21 @@ async def decide_and_resume(
             salt=salt,
             detector_timeout_ms=detector_timeout_ms,
         )
+        if metrics is not None:
+            metrics.resume_total.labels(outcome=outcome.value).inc()
+            if outcome == ResumeOutcome.COMPLETED:
+                metrics.approvals_total.labels(state="COMPLETED").inc()
+            elif outcome in (
+                ResumeOutcome.DENIED_ARGUMENTS_CHANGED,
+                ResumeOutcome.DENIED_OUTPUT_GUARD,
+            ):
+                metrics.approvals_total.labels(state="DENIED").inc()
+                if outcome == ResumeOutcome.DENIED_ARGUMENTS_CHANGED:
+                    # No upstream call was made on this branch (the mismatch
+                    # is caught before provider.complete()) — genuinely
+                    # avoided, unlike DENIED_OUTPUT_GUARD (upstream was
+                    # already called; only the response was blocked).
+                    metrics.upstream_calls_avoided_total.labels(verdict="NEED_APPROVAL").inc()
     final = get_approval(engine, approval_id)
     assert final is not None  # decide_approval() already proved this row exists
     return DecideAndResumeResult(
@@ -370,7 +435,9 @@ def list_recent_decisions(engine: Engine, *, limit: int = 20) -> list[ApprovalDe
 # ---------------------------------------------------------------------------
 
 
-def sweep_expired(engine: Engine, now: datetime | None = None) -> int:
+def sweep_expired(
+    engine: Engine, now: datetime | None = None, metrics: Metrics | None = None
+) -> int:
     """APR-007: transitions elapsed PENDING/APPROVED rows to EXPIRED. Called
     lazily at the top of every approval-reading/deciding request handler
     (main.py) rather than only from a separate timer thread — APR-008 is
@@ -404,6 +471,11 @@ def sweep_expired(engine: Engine, now: datetime | None = None) -> int:
                 payload={"from_state": from_state, "to_state": "EXPIRED"},
             )
             count += 1
+            if metrics is not None:
+                metrics.approvals_total.labels(state="EXPIRED").inc()
+                # OBS-003: a NEED_APPROVAL that expired unresumed avoided its
+                # upstream call, exactly as a DENY does.
+                metrics.upstream_calls_avoided_total.labels(verdict="NEED_APPROVAL").inc()
     return count
 
 
@@ -776,7 +848,9 @@ async def resume_approved(
 # ---------------------------------------------------------------------------
 
 
-def reconcile_resuming_on_startup(engine: Engine, max_resume_attempts: int) -> int:
+def reconcile_resuming_on_startup(
+    engine: Engine, max_resume_attempts: int, metrics: Metrics | None = None
+) -> int:
     """APR-014: "On startup, the system MUST reconcile every row in
     RESUMING: if the resume attempt count is below MAX_RESUME_ATTEMPTS,
     return it to APPROVED for retry; otherwise move it to FAILED." Returns
@@ -820,4 +894,7 @@ def reconcile_resuming_on_startup(engine: Engine, max_resume_attempts: int) -> i
                 },
             )
             count += 1
+            if metrics is not None and to_state == "FAILED":
+                metrics.approvals_total.labels(state="FAILED").inc()
+                metrics.upstream_calls_avoided_total.labels(verdict="NEED_APPROVAL").inc()
     return count
