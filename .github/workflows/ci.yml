@@ -99,7 +99,7 @@ jobs:
         # (see the ADR for the per-finding breakdown), never a real
         # credential. A genuinely new secret is *not* in the baseline and
         # still fails this step.
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
           GITLEAKS_ENABLE_COMMENTS: false
