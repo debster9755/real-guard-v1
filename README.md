@@ -521,16 +521,39 @@ third-party CDN (HTMX and a small `json-enc` extension are vendored under
 [`docs/adr/0006-reviewer-dashboard-session-auth-and-csrf.md`](docs/adr/0006-reviewer-dashboard-session-auth-and-csrf.md)
 for the full design).
 
-**No rendered screenshot is included.** This environment has no
-headless-browser or HTML-rendering tool available to honestly produce one
-(checked for and confirmed absent — see `docs/adr/0010` decision 5).
-Fabricating an image of a UI state never actually rendered would violate
-this project's own rule against inventing content as firmly for an image
-as for a number, so the walkthrough below is the same real, `curl`-captured
-HTTP exchange (including the queue page's raw HTML and its real CSRF
-token) Phase 4 originally verified end to end — every step is something
-that actually happened against a running `uvicorn` process, just not
-photographed.
+**Real screenshots, captured via a real headless-Chromium session.**
+`docs/adr/0010`'s decision 5 originally shipped this section without one —
+no browser-automation tool was available in that environment. That gap is
+now closed for real (`docs/adr/0012`): Playwright drove an actual local
+Chromium instance through the real login form, the real rendered queue, and
+a real click on the rendered "Approve" button (an HTMX-driven DOM swap, not
+a page reload) against a real `uvicorn` process — the exact command is
+`pytest tests/test_dashboard_browser.py -m browser -v`, and the same session
+also confirmed, via a real `securitypolicyviolation` listener, that the
+browser's own CSP enforcement is clean. Nothing below is a mockup or a
+fabricated image.
+
+![Reviewer sign-in page](docs/screenshots/dashboard-login.png)
+
+*The sign-in screen — the mock-mode banner, the reviewer-key field, and the
+"Sign in" button, exactly as `app/templates/dashboard/login.html` renders
+it.*
+
+![Pending-approvals queue with one item awaiting review](docs/screenshots/dashboard-queue.png)
+
+*The queue after logging in, with one real `NEED_APPROVAL` item: its risk
+badge, reason codes, policy hits, the sanitized JSON preview, and the
+Approve/Deny controls.*
+
+![The same queue immediately after clicking Approve](docs/screenshots/dashboard-decided.png)
+
+*The same row immediately after a real click on "Approve" — swapped in
+place by HTMX (`hx-swap="outerHTML"`), with no page navigation. The
+walkthrough below is the same real, `curl`-captured HTTP exchange (including
+the queue page's raw HTML and its real CSRF token) Phase 4 originally
+verified end to end — kept here as a second, complementary view of the
+identical mechanism, one step at a time over raw HTTP rather than through a
+rendered page.*
 
 Start the server with both key sets configured:
 
@@ -1164,7 +1187,11 @@ python scripts/benchmark.py --iterations 1000 --warmup 100 --out docs/benchmarks
 (5 tests, `docker` marker) and `tests/test_ollama_live.py` (4 tests,
 `ollama` marker) self-skip — reported by pytest as skipped, never as
 failed — on a machine with no reachable Docker daemon or no local Ollama
-with `qwen3:8b` pulled, respectively. `tests/data/golden_corpus.jsonl` is
+with `qwen3:8b` pulled, respectively. `tests/test_dashboard_browser.py` and
+`tests/test_mermaid_rendering_browser.py` (`browser` marker, `docs/adr/0012`)
+self-skip the same way when Chromium is not actually installed and
+launchable (`pip install -e .[dev]` then a one-time `playwright install
+chromium`). `tests/data/golden_corpus.jsonl` is
 the 54-case corpus `SPEC.md §17.4` specifies; `tests/test_golden_corpus.py`
 runs every one of the 54 cases end to end. `tests/test_adversarial.py`
 (Phase 7) pins the outcome of every deliberate detector-evasion attempt
@@ -1317,11 +1344,13 @@ project has found and documented rather than silently carried:
 - `CONTENT_RETENTION=encrypted` has no storage backend yet;
   `detector_findings`/`policy_hits`-as-a-table/`idempotency_records`
   (`SPEC.md §10`) remain deferred.
-- The reviewer dashboard has no automated test that renders it in a real
-  browser with CSP enforcement turned on — Phase 4 found and fixed one
-  class of defect (inline event-handler/style attributes silently broken
-  by the CSP header) by reading the templates against the header's real
-  semantics, not by a passing test.
+- The reviewer dashboard now has a real, Playwright-driven headless-Chromium
+  test (`tests/test_dashboard_browser.py`, `docs/adr/0012`) that found and
+  closed one real CSP defect the templates' own markup could not reveal
+  (the vendored `htmx.min.js` injecting an inline style by default,
+  refused by the CSP header) — a genuine gap closed, not merely a residual
+  risk documented. This test self-skips, rather than failing, in any
+  environment where Chromium is not actually installed and launchable.
 - The Ollama preflight runs once, at startup, and is cached for the
   process's lifetime — `/readyz` keeps reporting `provider: "ok"` if the
   host Ollama goes down sometime *after* a successful startup check, until
@@ -1342,9 +1371,9 @@ project has found and documented rather than silently carried:
   `MAX_DECODE_DEPTH = 3` bound) — see
   [`docs/threat-model.md`](docs/threat-model.md) for all four stated in
   full.
-- The dashboard section above ships with no rendered browser screenshot —
-  no tool to honestly produce one is available in this environment (see
-  `docs/adr/0010` decision 5).
+- The dashboard section above now ships with real, Playwright-captured
+  screenshots (see `docs/adr/0012`) — the gap `docs/adr/0010` decision 5
+  originally named is closed.
 
 ## Roadmap
 

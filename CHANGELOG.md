@@ -13,6 +13,43 @@ short commit SHA that landed it (`git log --oneline` on `main`).
 
 ## [Unreleased]
 
+### Playwright browser verification — closing a Phase 9 gap (`docs/adr/0012`)
+
+Additional, explicitly-authorized verification work closing the one named
+gap `docs/adr/0011`'s own "Manual validation" line and `docs/adr/0010`
+decision 5 both left open: no headless-browser tooling was available to
+actually render and verify the reviewer dashboard. **Not** the withheld
+publication step — no repository created, no push, no tag; `git remote -v`
+and `git tag` remain empty.
+
+- **Added** `playwright==1.55.0` (pinned) to `pyproject.toml`'s dev
+  dependencies, a real local Chromium (`playwright install chromium`), and
+  a `browser` pytest marker mirroring the `docker`/`ollama` skip-clean
+  contract exactly — both its skip and pass branches verified for real
+  (forced-unavailable → skipped; normal → passed).
+- **Found and fixed** a real, previously-undetected CSP defect: the
+  vendored `htmx.min.js` (1.9.12) injects an inline `<style>` block by
+  default, silently refused by `app/main.py`'s strict
+  `Content-Security-Policy: default-src 'self'` header — invisible to
+  every prior `TestClient`/`curl`-driven check, caught only by a real
+  browser's own CSP enforcement. Fixed with one line in
+  `app/templates/dashboard/base.html` (htmx's own
+  `<meta name="htmx-config">` mechanism, disabling the one unused feature
+  responsible) — no CSP loosening, no functional change.
+- **Added** `tests/test_dashboard_browser.py` (real login → CSP → HTMX
+  DOM-swap → screenshot flow, one real `uvicorn` + one real Chromium
+  session) and `tests/test_mermaid_rendering_browser.py` (a bonus: all 6
+  README/`docs/architecture.md` Mermaid diagrams re-verified by actually
+  rendering them with the real Mermaid JS library in a real browser, a
+  meaningfully different check than the existing `mmdc` syntax-only
+  validation).
+- **Added** `docs/screenshots/` — 3 real dashboard PNGs (login, queue,
+  post-decision) and 6 real Mermaid-diagram PNGs, all actually opened and
+  inspected, not merely confirmed to exist.
+- **Updated** the README's "Dashboard" and "Limitations" sections to
+  reference the real screenshots instead of the prior honest "no rendered
+  screenshot" gap language.
+
 ### Phase 9 — release preparation (`docs/adr/0011`)
 
 Preparation only — **not** the publication step. `v0.1.0` is not tagged,

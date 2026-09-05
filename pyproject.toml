@@ -34,6 +34,12 @@ dev = [
     "mypy>=1.13,<2.0",
     "types-PyYAML",
     "types-jsonschema",
+    "playwright==1.55.0",  # Phase 9 gap-closure (ADR 0012): real headless-Chromium
+    # verification of the reviewer dashboard — CSP enforcement, HTMX DOM swaps,
+    # real screenshots. Requires a one-time `playwright install chromium` (and,
+    # on Linux, `playwright install-deps chromium`) after `pip install -e .[dev]`;
+    # the `browser`-marked tests below skip cleanly, not fail, if that step was
+    # never run in the current environment.
 ]
 
 [build-system]
@@ -96,6 +102,7 @@ markers = [
     "docker: tests that require the built Docker image",
     "docs: README command extraction tests (Phase 8)",
     "ollama: tests requiring a real local Ollama with qwen3:8b (Phase 5); skip, never fail, when unavailable",
+    "browser: tests requiring a real, launchable headless Chromium via Playwright (Phase 9, ADR 0012); skip, never fail, when unavailable",
 ]
 
 [tool.coverage.run]

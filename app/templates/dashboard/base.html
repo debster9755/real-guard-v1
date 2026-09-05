@@ -5,6 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}real-guard-v1 reviewer dashboard{% endblock %}</title>
   <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+  {# ADR 0012: htmx (1.9.12) injects an inline `<style>` block for its
+     `.htmx-indicator`/`.htmx-request` opacity transition by default
+     (`config.includeIndicatorStyles`), unconditionally, whether or not a
+     page uses `htmx-indicator` at all (it isn't used anywhere in this
+     dashboard — confirmed by grep). SEC-008's `default-src 'self'` CSP
+     (app/main.py) has no `style-src 'unsafe-inline'`, so a real browser
+     actually refuses that inline style and fires a `securitypolicyviolation`
+     event — caught for real by tests/test_dashboard_browser.py, not by any
+     prior TestClient/curl-driven check, none of which can observe browser
+     CSP enforcement. This meta tag is htmx's own documented pre-load
+     config mechanism (read once, before its style-injection runs) and
+     turns off exactly the one feature responsible, with no functional
+     change: nothing in this dashboard ever relies on the indicator styling
+     it would have injected. #}
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
   {# SPEC.md §2.19: no third-party CDN — both files below are vendored
      under app/static/vendor/ and served same-origin. #}
   <script src="/dashboard/static/vendor/htmx.min.js"></script>
