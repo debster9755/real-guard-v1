@@ -13,6 +13,18 @@ short commit SHA that landed it (`git log --oneline` on `main`).
 
 ## [Unreleased]
 
+### Dependabot configuration — closing the last named Phase 9 gap
+
+- **Added** `.github/dependabot.yml`, covering the three ecosystems named
+  in `PLAN.md` §13 ("Dependabot: on for pip, GitHub Actions, and Docker
+  ecosystems"): `pip` (root `pyproject.toml`), `github-actions` (workflows
+  under `.github/workflows/`), and `docker` (the root `Dockerfile`). All
+  three on a weekly schedule, `open-pull-requests-limit: 10`, distinct
+  commit-message prefixes and labels per ecosystem. This was the one gap
+  flagged, but not yet built, by the Phase 9 preparation report
+  (`docs/adr/0011`); it is committed here, before repository creation, so
+  it is part of the very first push.
+
 ### Playwright browser verification — closing a Phase 9 gap (`docs/adr/0012`)
 
 Additional, explicitly-authorized verification work closing the one named
