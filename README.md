@@ -10,7 +10,7 @@ downstream tool.
 
 This repository is being built phase by phase against [`PLAN.md`](PLAN.md)
 (build sequence) and [`SPEC.md`](SPEC.md) (normative contract). As of this
-writing: **Phases 0–5 are complete.** Phases 0–2 froze the contracts, built
+writing: **Phases 0–7 are complete.** Phases 0–2 froze the contracts, built
 the gateway skeleton, and shipped full input-plane inspection (prompt
 injection, jailbreak, indirect injection, encoded payloads, inbound PII and
 secrets) with policy-driven `ALLOW`/`DENY` decisions and `REDACT`
