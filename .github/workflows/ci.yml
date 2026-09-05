@@ -30,6 +30,15 @@ jobs:
       - name: Contract validation (policy schema, 54-case corpus, OpenAPI)
         run: python scripts/validate_contracts.py
 
+      - name: OpenAPI drift check (Phase 8 / docs/adr/0010)
+        # PLAN.md §12 anti-drift automation item 3: "regenerates openapi.json
+        # from the running app and fails if it differs from the committed
+        # file, so the API contract cannot change silently." Runs before the
+        # test suite so a stale, hand-edited openapi.json fails fast with a
+        # readable diff rather than being caught incidentally by some other
+        # check.
+        run: python scripts/generate_openapi.py --check
+
       - name: pytest with coverage
         # WS-15's own CI requirement ("a CI Docker smoke test running the
         # README's three curl commands against the built image") is met by
@@ -41,7 +50,15 @@ jobs:
         # self-skips here (no host Ollama in this runner) per PLAN.md Phase
         # 5's own acceptance note — "skipped, not failed, in CI where no
         # Ollama exists" — see both files' docstrings and the `docker`/
-        # `ollama` marker definitions in pyproject.toml.
+        # `ollama` marker definitions in pyproject.toml. Phase 8's docs
+        # suite (tests/test_readme_commands.py, test_docs_links.py,
+        # test_docs_placeholders.py, test_docs_numbers.py,
+        # test_docs_no_overclaiming.py — the `docs` marker) is collected
+        # here too, with no marker filter excluding it: the README-command
+        # extraction test (DOC-004), the internal-link checker, the
+        # placeholder grep (DOC-012, now covering every published Markdown
+        # file), and the numeric-claim trace (DOC-010) all run as part of
+        # this one step.
         run: pytest --cov=app --cov-report=term-missing --cov-report=xml -q
 
       - name: Coverage gate (PLAN.md §10.2 G14: >= 85% line, >= 75% branch)

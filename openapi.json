@@ -1,418 +1,649 @@
 {
-  "openapi": "3.1.0",
-  "info": {
-    "title": "real-guard-v1",
-    "version": "0.1.0",
-    "description": "Open-source AI Firewall / FWaaS. Hand-authored target per SPEC.md §4. In Phase 3+ this file MUST be regenerated from the running FastAPI app and diffed against this committed copy — a diff fails CI (PLAN.md §12, anti-drift check #3).",
-    "license": {"name": "MIT"}
+  "components": {
+    "schemas": {
+      "ApprovalDecisionRequest": {
+        "description": "SPEC.md \u00a74.6. API-012: `note` is required (non-empty) when\n`decision` is DENY \u2014 enforced in app/approvals.py, not here, since the\nrule is conditional on the field's own value.",
+        "properties": {
+          "decision": {
+            "enum": [
+              "APPROVE",
+              "DENY"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reviewer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Id"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "ApprovalDecisionRequest",
+        "type": "object"
+      },
+      "ApprovalListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalPreview"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ApprovalListResponse",
+        "type": "object"
+      },
+      "ApprovalPreview": {
+        "description": "API-010, APR-012: `preview` carries transformed content only.",
+        "properties": {
+          "approval_id": {
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "policy_hits": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Policy Hits",
+            "type": "array"
+          },
+          "preview": {
+            "additionalProperties": true,
+            "title": "Preview",
+            "type": "object"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reason Codes",
+            "type": "array"
+          },
+          "risk_level": {
+            "enum": [
+              "NONE",
+              "LOW",
+              "MEDIUM",
+              "HIGH",
+              "CRITICAL"
+            ],
+            "title": "Risk Level",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "transaction_id": {
+            "title": "Transaction Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approval_id",
+          "transaction_id",
+          "status",
+          "risk_level",
+          "reason_codes",
+          "policy_hits",
+          "preview",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "ApprovalPreview",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthzResponse": {
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "HealthzResponse",
+        "type": "object"
+      },
+      "ReadyzDependencies": {
+        "properties": {
+          "database": {
+            "default": "not_configured",
+            "enum": [
+              "ok",
+              "unreachable",
+              "not_configured"
+            ],
+            "title": "Database",
+            "type": "string"
+          },
+          "policy": {
+            "enum": [
+              "ok",
+              "invalid",
+              "unavailable"
+            ],
+            "title": "Policy",
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "ok",
+              "unreachable",
+              "not_configured"
+            ],
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy",
+          "provider"
+        ],
+        "title": "ReadyzDependencies",
+        "type": "object"
+      },
+      "ReadyzResponse": {
+        "properties": {
+          "dependencies": {
+            "$ref": "#/components/schemas/ReadyzDependencies"
+          },
+          "mode": {
+            "enum": [
+              "mock",
+              "live"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ready",
+          "mode",
+          "dependencies"
+        ],
+        "title": "ReadyzResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
   },
-  "servers": [{"url": "http://localhost:8000", "description": "Local (mock mode by default)"}],
+  "info": {
+    "description": "Open-source AI Firewall / FWaaS. See SPEC.md.",
+    "title": "real-guard-v1",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
   "paths": {
-    "/v1/chat/completions": {
-      "post": {
-        "operationId": "createChatCompletion",
-        "summary": "OpenAI-compatible inspected proxy",
-        "description": "SPEC.md §4.3. Accepts an OpenAI chat-completion request, inspects it, and either forwards it (ALLOW), blocks it (DENY), or holds it for human review (NEED_APPROVAL). stream:true is rejected (API-014).",
-        "security": [{"ServiceKey": []}],
+    "/dashboard": {
+      "get": {
+        "description": "SPEC.md \u00a74.1: `GET /dashboard` requires a reviewer session.\nAlso accepts a reviewer bearer key directly (consistency with the\nrest of the API, and useful for `curl`-based verification) \u2014 in\nthat mode the page renders read-only, since there is no session to\nbind a CSRF token to (see docs/adr/0006). A service identity, by\neither route, gets 403. No credential at all redirects to the login\nscreen rather than a bare 401 \u2014 this is a browser-facing page.",
+        "operationId": "dashboard_index_dashboard_get",
         "parameters": [
-          {"$ref": "#/components/parameters/CorrelationId"},
-          {"$ref": "#/components/parameters/IdempotencyKey"}
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "PENDING",
+              "title": "Status",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Dashboard Index Dashboard Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dashboard Index"
+      }
+    },
+    "/dashboard/approvals/{approval_id}/decide": {
+      "post": {
+        "description": "The dashboard's own CSRF-protected decision route (ADR 0006).\n\nNot a second implementation of the approval lifecycle: this calls\nthe exact same `app/approvals.decide_and_resume()` the canonical\n`POST /v1/firewall/approvals/{id}/decision` uses (app/main.py) \u2014\nthe only things this route does differently are (1) authenticate\nvia the SEC-005 session cookie rather than a bearer header, which\nworks here specifically because the cookie's `Path=/dashboard`\nscope covers this URL (it does not cover `/v1/firewall/...` \u2014 see\nthe module docstring and docs/adr/0006), (2) enforce SEC-007's CSRF\ncheck, and (3) render a small HTML fragment for HTMX to swap in,\ninstead of the canonical endpoint's JSON body.\n\nSEC-006: a service identity has no route in here at all \u2014 this\nhandler never accepts a bearer key, only a session, and a session\nis only ever minted for a reviewer identity (`dashboard_login_submit`\nabove). `tests/test_dashboard.py` asserts this directly with a\nservice bearer key and no cookie, and separately with a\nhand-crafted request that has no valid session.",
+        "operationId": "dashboard_decide_dashboard_approvals__approval_id__decide_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
-          "required": true,
-          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatCompletionRequest"}}}
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalDecisionRequest"
+              }
+            }
+          },
+          "required": true
         },
         "responses": {
           "200": {
-            "description": "ALLOW — request was forwarded and completed",
-            "headers": {
-              "X-RealGuard-Transaction-Id": {"$ref": "#/components/headers/TransactionId"},
-              "X-RealGuard-Mode": {"$ref": "#/components/headers/Mode"}
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
             },
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AllowedResponse"}}}
+            "description": "Successful Response"
           },
-          "202": {
-            "description": "NEED_APPROVAL — held for human review, no upstream call made",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NeedApprovalResponse"}}}
-          },
-          "400": {"description": "Invalid request or unsupported field (e.g. stream:true)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "401": {"description": "Invalid or missing authentication", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "403": {"description": "DENY — blocked by policy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeniedResponse"}}}},
-          "413": {"description": "Payload too large", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "429": {"description": "Rate limited", "headers": {"Retry-After": {"schema": {"type": "integer"}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "500": {"description": "Internal error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "502": {"description": "Upstream error or invalid upstream response", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "503": {"description": "Policy or dependency unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "504": {"description": "Upstream timeout", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}
-        }
-      }
-    },
-    "/v1/firewall/approvals": {
-      "get": {
-        "operationId": "listApprovals",
-        "summary": "List pending / historical approvals",
-        "description": "SPEC.md §4.4. Reviewer-only (API-010). Returns transformed preview content only — never raw.",
-        "security": [{"ReviewerKey": []}, {"ReviewerSession": []}],
-        "parameters": [
-          {"name": "status", "in": "query", "required": false, "schema": {"type": "array", "items": {"$ref": "#/components/schemas/ApprovalState"}}, "style": "form", "explode": true},
-          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}},
-          {"name": "cursor", "in": "query", "required": false, "schema": {"type": "string"}}
-        ],
-        "responses": {
-          "200": {"description": "Page of approvals", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApprovalListResponse"}}}},
-          "401": {"description": "Unauthenticated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "403": {"description": "Not a reviewer identity", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}
-        }
-      }
-    },
-    "/v1/firewall/requests/{id}": {
-      "get": {
-        "operationId": "getTransactionStatus",
-        "summary": "Poll a transaction's status and, when completed, its sanitized result",
-        "description": "SPEC.md §4.5. Accepts a txn_ or req_ id. Cross-identity reads return 404, not 403 (API-011), unless the caller holds a reviewer identity.",
-        "security": [{"ServiceKey": []}, {"ReviewerKey": []}, {"ReviewerSession": []}],
-        "parameters": [
-          {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^(txn|req)_[A-Za-z0-9]+$"}}
-        ],
-        "responses": {
-          "200": {"description": "Current transaction status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TransactionStatusResponse"}}}},
-          "401": {"description": "Unauthenticated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "404": {"description": "Not found, or belongs to a different identity", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}
-        }
-      }
-    },
-    "/v1/firewall/approvals/{id}/decision": {
-      "post": {
-        "operationId": "decideApproval",
-        "summary": "Approve or deny a pending approval",
-        "description": "SPEC.md §4.6. Reviewer-only (API-012, SEC-006). Idempotency-Key required. A note is required for DENY. Self-approval is forbidden (APR-009).",
-        "security": [{"ReviewerKey": []}, {"ReviewerSession": []}],
-        "parameters": [
-          {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^apr_[A-Za-z0-9]+$"}},
-          {"$ref": "#/components/parameters/IdempotencyKeyRequired"},
-          {"name": "X-CSRF-Token", "in": "header", "required": false, "description": "Required when authenticating via a dashboard session cookie (SEC-007); not required for a bearer reviewer key.", "schema": {"type": "string"}}
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApprovalDecisionRequest"}}}
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
         },
-        "responses": {
-          "200": {"description": "Decision recorded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApprovalDecisionResponse"}}}},
-          "400": {"description": "Invalid body", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "401": {"description": "Unauthenticated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "403": {"description": "Not a reviewer identity, or self-approval attempt", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "404": {"description": "Unknown approval", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "409": {"description": "Wrong state, expired, or idempotency-key conflict", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
-          "422": {"description": "Missing required note on a DENY decision", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}
-        }
+        "summary": "Dashboard Decide"
       }
     },
-    "/dashboard": {
+    "/dashboard/login": {
       "get": {
-        "operationId": "getDashboard",
-        "summary": "Reviewer dashboard (server-rendered HTML)",
-        "description": "SPEC.md §2.19, §18. Not a JSON API — included for route-inventory completeness (API-001).",
-        "security": [{"ReviewerSession": []}],
+        "operationId": "dashboard_login_form_dashboard_login_get",
         "responses": {
-          "200": {"description": "Dashboard HTML", "content": {"text/html": {"schema": {"type": "string"}}}},
-          "401": {"description": "No valid reviewer session; redirects to login"}
-        }
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dashboard Login Form"
+      },
+      "post": {
+        "description": "SEC-005: exchanges a reviewer key for a signed session cookie.\nSEC-006: a service key (or any unrecognized key) is rejected here,\nthe only place a session is ever minted \u2014 decoding a cookie later\nnever has to re-derive identity class.",
+        "operationId": "dashboard_login_submit_dashboard_login_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Dashboard Login Submit Dashboard Login Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dashboard Login Submit"
+      }
+    },
+    "/dashboard/logout": {
+      "post": {
+        "operationId": "dashboard_logout_dashboard_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Dashboard Logout Dashboard Logout Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dashboard Logout"
       }
     },
     "/healthz": {
       "get": {
-        "operationId": "healthz",
-        "summary": "Liveness — process is running",
-        "description": "SPEC.md §API-015. Never touches the database. Never rate limited.",
-        "security": [],
+        "operationId": "healthz_healthz_get",
         "responses": {
-          "200": {"description": "Process is alive", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/HealthzResponse"}}}}
-        }
-      }
-    },
-    "/readyz": {
-      "get": {
-        "operationId": "readyz",
-        "summary": "Readiness — dependencies and policy are usable",
-        "description": "SPEC.md §API-016. Reports the active mode (mock/live) and, in mock mode, is one of the four required visibility points (DEP-004).",
-        "security": [],
-        "responses": {
-          "200": {"description": "Ready", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReadyzResponse"}}}},
-          "503": {"description": "Not ready — a dependency breakdown is included", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReadyzResponse"}}}}
-        }
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthzResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz"
       }
     },
     "/metrics": {
       "get": {
-        "operationId": "metrics",
-        "summary": "Prometheus exposition",
-        "description": "SPEC.md §API-017, §13. Requires a service key when METRICS_REQUIRE_AUTH=true (default true in production).",
-        "security": [{"ServiceKey": []}, {}],
+        "description": "SPEC.md \u00a72.16, \u00a74.7, OBS-001, API-017. Prometheus text\nexposition. API-017: \"MAY require a service key when\nMETRICS_REQUIRE_AUTH=true, which MUST default to true in\nproduction\" (`app/config.py` already fails startup if production\nleaves it false). When `False` (the non-production default), the\nendpoint is open \u2014 no identity check at all, regardless of whether\nkeys happen to be configured, matching the setting's own literal\nwording (\"MAY require... when METRICS_REQUIRE_AUTH=true\"). When\n`True`, any recognized key of *either* class is accepted:\nSPEC.md \u00a711.1's table explicitly lists `/metrics` under Service's\nallowed endpoints and leaves Reviewer's \"may NOT call\" column empty\nfor it \u2014 read permissively rather than inventing an undocumented\nrestriction (see docs/adr/0008).",
+        "operationId": "metrics_endpoint_metrics_get",
         "responses": {
-          "200": {"description": "Prometheus text exposition", "content": {"text/plain; version=0.0.4": {"schema": {"type": "string"}}}},
-          "401": {"description": "Unauthenticated, when METRICS_REQUIRE_AUTH=true"}
-        }
-      }
-    }
-  },
-  "components": {
-    "securitySchemes": {
-      "ServiceKey": {"type": "http", "scheme": "bearer", "description": "SEC-001: FIREWALL_API_KEYS. May call /v1/chat/completions and read its own transactions. MUST NOT decide approvals (SEC-006)."},
-      "ReviewerKey": {"type": "http", "scheme": "bearer", "description": "SEC-001: FIREWALL_REVIEWER_KEYS. May decide approvals and read any transaction."},
-      "ReviewerSession": {"type": "apiKey", "in": "cookie", "name": "realguard_session", "description": "SEC-005: signed, HttpOnly, SameSite=Strict session issued by exchanging a reviewer key at /dashboard/login."}
-    },
-    "parameters": {
-      "CorrelationId": {"name": "X-Correlation-Id", "in": "header", "required": false, "description": "API-003. Echoed back; generated if absent.", "schema": {"type": "string"}},
-      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": false, "description": "API-007. Optional on chat completions.", "schema": {"type": "string"}},
-      "IdempotencyKeyRequired": {"name": "Idempotency-Key", "in": "header", "required": true, "description": "API-007. Required on the decision endpoint.", "schema": {"type": "string"}}
-    },
-    "headers": {
-      "TransactionId": {"description": "API-002", "schema": {"type": "string", "pattern": "^txn_[A-Za-z0-9]+$"}},
-      "Mode": {"description": "API-002, DEP-004", "schema": {"type": "string", "enum": ["mock", "live"]}}
-    },
-    "schemas": {
-      "Verdict": {"type": "string", "enum": ["ALLOW", "DENY", "NEED_APPROVAL"]},
-      "Transformation": {"type": "string", "enum": ["NONE", "REDACT", "MASK", "SANITIZE", "REWRITE", "TRUNCATE"]},
-      "RiskLevel": {"type": "string", "enum": ["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"]},
-      "ReasonCode": {
-        "type": "string",
-        "enum": [
-          "PROMPT_INJECTION", "JAILBREAK", "INDIRECT_INJECTION", "ENCODED_PAYLOAD",
-          "PII_DETECTED", "SECRET_DETECTED", "BLOCKED_TOPIC", "SENSITIVE_TOPIC",
-          "SENSITIVE_ACTION", "DESTRUCTIVE_ACTION", "TOOL_NOT_ALLOWLISTED",
-          "SYSTEM_PROMPT_LEAK", "CANARY_LEAK", "OUTPUT_PII", "OUTPUT_SECRET",
-          "PAYLOAD_TOO_LARGE", "RATE_LIMITED", "SCHEMA_VIOLATION",
-          "DETECTOR_TIMEOUT", "DETECTOR_UNAVAILABLE", "POLICY_UNAVAILABLE",
-          "TRANSFORMATION_FAILED", "OUTPUT_GUARD_FAILED", "ARGUMENTS_CHANGED"
-        ],
-        "description": "SPEC.md §5.7 — the closed reason-code taxonomy."
-      },
-      "ApprovalState": {"type": "string", "enum": ["PENDING", "APPROVED", "DENIED", "EXPIRED", "RESUMING", "COMPLETED", "FAILED", "CANCELLED"]},
-      "ChatMessage": {
-        "type": "object",
-        "required": ["role", "content"],
-        "properties": {
-          "role": {"type": "string", "enum": ["system", "user", "assistant", "tool"]},
-          "content": {"type": "string"}
-        }
-      },
-      "ToolDefinition": {
-        "type": "object",
-        "properties": {
-          "type": {"type": "string", "const": "function"},
-          "function": {
-            "type": "object",
-            "properties": {
-              "name": {"type": "string"},
-              "parameters": {"type": "object"}
-            }
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
           }
-        }
-      },
-      "ChatCompletionRequest": {
-        "type": "object",
-        "required": ["messages"],
-        "properties": {
-          "messages": {"type": "array", "minItems": 1, "items": {"$ref": "#/components/schemas/ChatMessage"}},
-          "model": {"type": "string", "description": "Defaults to UPSTREAM_MODEL if omitted"},
-          "tools": {"type": "array", "items": {"$ref": "#/components/schemas/ToolDefinition"}},
-          "tool_choice": {},
-          "temperature": {"type": "number"},
-          "top_p": {"type": "number"},
-          "max_tokens": {"type": "integer"},
-          "stop": {},
-          "n": {"type": "integer"},
-          "seed": {"type": "integer"},
-          "user": {"type": "string", "description": "SEC-009: recorded as metadata only, never treated as identity"},
-          "stream": {"type": "boolean", "description": "API-014: MUST be absent or false. true is rejected with 400 UNSUPPORTED_FIELD."}
         },
-        "additionalProperties": true,
-        "description": "API-013: unknown fields are forwarded to the upstream unchanged."
-      },
-      "TimingsMs": {
-        "type": "object",
-        "properties": {
-          "detection": {"type": "number"},
-          "policy": {"type": "number"},
-          "upstream": {"type": "number"},
-          "output_guard": {"type": "number"},
-          "firewall_added": {"type": "number"}
-        }
-      },
-      "FirewallMetadata": {
-        "type": "object",
-        "description": "ADR 0002: carried as one top-level `firewall` field alongside the OpenAI completion fields, never wrapping them — see AllowedResponse.",
-        "required": ["decision", "transformation", "transaction_id", "policy_version", "mode"],
-        "properties": {
-          "decision": {"type": "string", "const": "ALLOW"},
-          "transformation": {"$ref": "#/components/schemas/Transformation"},
-          "transaction_id": {"type": "string"},
-          "risk_level": {"$ref": "#/components/schemas/RiskLevel"},
-          "reason_codes": {"type": "array", "items": {"$ref": "#/components/schemas/ReasonCode"}},
-          "policy_hits": {"type": "array", "items": {"type": "string"}},
-          "policy_version": {"type": "string"},
-          "degraded": {"type": "boolean"},
-          "mode": {"type": "string", "enum": ["mock", "live"]},
-          "timings_ms": {"$ref": "#/components/schemas/TimingsMs"}
-        }
-      },
-      "AllowedResponse": {
-        "type": "object",
-        "description": "ADR 0002: the OpenAI chat-completion object AT THE TOP LEVEL, plus one additional `firewall` metadata field — never nested under a `response` wrapper. Required so the real openai SDK's ChatCompletion parsing (which reads id/object/created/model/choices/usage from the top level) works unmodified; an unrecognised top-level field is tolerated and preserved via the SDK's model_extra, verified empirically against openai-python.",
-        "required": ["id", "object", "created", "model", "choices", "usage", "firewall"],
-        "properties": {
-          "id": {"type": "string"},
-          "object": {"type": "string", "const": "chat.completion"},
-          "created": {"type": "integer"},
-          "model": {"type": "string"},
-          "choices": {"type": "array", "items": {"type": "object"}},
-          "usage": {
-            "type": "object",
-            "properties": {
-              "prompt_tokens": {"type": "integer"},
-              "completion_tokens": {"type": "integer"},
-              "total_tokens": {"type": "integer"}
+        "summary": "Metrics Endpoint"
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyzResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readyz"
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "operationId": "create_chat_completion_v1_chat_completions_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Create Chat Completion"
+      }
+    },
+    "/v1/firewall/approvals": {
+      "get": {
+        "description": "SPEC.md \u00a74.4. API-010: reviewer-only, transformed preview only.",
+        "operationId": "list_pending_approvals_v1_firewall_approvals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
             }
           },
-          "firewall": {"$ref": "#/components/schemas/FirewallMetadata"}
-        }
-      },
-      "DeniedResponse": {
-        "type": "object",
-        "required": ["decision", "risk_level", "reason_codes", "policy_hits", "transformation", "transaction_id"],
-        "properties": {
-          "decision": {"type": "string", "const": "DENY"},
-          "risk_level": {"$ref": "#/components/schemas/RiskLevel"},
-          "reason_codes": {"type": "array", "items": {"$ref": "#/components/schemas/ReasonCode"}},
-          "policy_hits": {"type": "array", "items": {"type": "string"}},
-          "transformation": {"type": "string", "const": "NONE"},
-          "transaction_id": {"type": "string"},
-          "message": {"type": "string"},
-          "firewall": {
-            "type": "object",
-            "properties": {
-              "policy_version": {"type": "string"},
-              "degraded": {"type": "boolean"},
-              "mode": {"type": "string"},
-              "findings_summary": {
-                "type": "array",
-                "description": "API-009: identity, category and confidence only — never evidence text.",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "detector_id": {"type": "string"},
-                    "category": {"type": "string"},
-                    "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]}
-                  }
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
                 }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Status"
               }
             }
           }
-        }
-      },
-      "NeedApprovalResponse": {
-        "type": "object",
-        "required": ["decision", "risk_level", "reason_codes", "policy_hits", "transformation", "transaction_id", "request_id", "approval_id", "status", "expires_at"],
-        "properties": {
-          "decision": {"type": "string", "const": "NEED_APPROVAL"},
-          "risk_level": {"$ref": "#/components/schemas/RiskLevel"},
-          "reason_codes": {"type": "array", "items": {"$ref": "#/components/schemas/ReasonCode"}},
-          "policy_hits": {"type": "array", "items": {"type": "string"}},
-          "transformation": {"$ref": "#/components/schemas/Transformation"},
-          "transaction_id": {"type": "string"},
-          "request_id": {"type": "string"},
-          "approval_id": {"type": "string"},
-          "status": {"type": "string", "const": "PENDING"},
-          "expires_at": {"type": "string", "format": "date-time"},
-          "poll_url": {"type": "string"},
-          "message": {"type": "string"}
-        }
-      },
-      "ApprovalPreview": {
-        "type": "object",
-        "description": "APR-012, TRN-008: transformed content only, never raw.",
-        "properties": {
-          "approval_id": {"type": "string"},
-          "transaction_id": {"type": "string"},
-          "status": {"$ref": "#/components/schemas/ApprovalState"},
-          "risk_level": {"$ref": "#/components/schemas/RiskLevel"},
-          "reason_codes": {"type": "array", "items": {"$ref": "#/components/schemas/ReasonCode"}},
-          "policy_hits": {"type": "array", "items": {"type": "string"}},
-          "preview": {"type": "object", "description": "Transformed request/tool-call content shown to the reviewer"},
-          "created_at": {"type": "string", "format": "date-time"},
-          "expires_at": {"type": "string", "format": "date-time"}
-        }
-      },
-      "ApprovalListResponse": {
-        "type": "object",
-        "properties": {
-          "items": {"type": "array", "items": {"$ref": "#/components/schemas/ApprovalPreview"}},
-          "next_cursor": {"type": "string", "nullable": true}
-        }
-      },
-      "TransactionStatusResponse": {
-        "type": "object",
-        "required": ["transaction_id", "status"],
-        "properties": {
-          "transaction_id": {"type": "string"},
-          "status": {"type": "string"},
-          "decision": {"$ref": "#/components/schemas/Verdict"},
-          "response": {"type": "object", "nullable": true, "description": "Present only when status is COMPLETED"}
-        }
-      },
-      "ApprovalDecisionRequest": {
-        "type": "object",
-        "required": ["decision"],
-        "properties": {
-          "decision": {"type": "string", "enum": ["APPROVE", "DENY"]},
-          "note": {"type": "string", "description": "API-012: required (non-empty) when decision is DENY"},
-          "reviewer_id": {"type": "string"}
-        }
-      },
-      "ApprovalDecisionResponse": {
-        "type": "object",
-        "properties": {
-          "approval_id": {"type": "string"},
-          "status": {"$ref": "#/components/schemas/ApprovalState"},
-          "decided_at": {"type": "string", "format": "date-time"}
-        }
-      },
-      "HealthzResponse": {
-        "type": "object",
-        "properties": {"status": {"type": "string", "const": "ok"}}
-      },
-      "ReadyzResponse": {
-        "type": "object",
-        "properties": {
-          "ready": {"type": "boolean"},
-          "mode": {"type": "string", "enum": ["mock", "live"]},
-          "dependencies": {
-            "type": "object",
-            "properties": {
-              "database": {"type": "string", "enum": ["ok", "unreachable"]},
-              "policy": {"type": "string", "enum": ["ok", "invalid", "unavailable"]},
-              "provider": {"type": "string", "enum": ["ok", "unreachable", "not_configured"]}
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Pending Approvals"
+      }
+    },
+    "/v1/firewall/approvals/{approval_id}/decision": {
+      "post": {
+        "description": "SPEC.md \u00a74.6. API-012: reviewer-only, Idempotency-Key required,\nnon-empty note required for DENY, self-approval forbidden (APR-009),\nreplay/conflict handling (APR-010).\n\nPhase 4 (ADR 0006): identity resolution now accepts either of\nSPEC.md \u00a74.6's two named auth routes \u2014 `Authorization: Bearer\n<reviewer key>`, or a valid session cookie plus `X-CSRF-Token`\n(SEC-005/SEC-007) \u2014 via `resolve_decision_identity()`, which raises\n`CSRF_TOKEN_INVALID` (403) for a missing/mismatched token on the\ncookie route. In *practice* a real browser never presents this\nendpoint with the SEC-005 cookie automatically, because that\ncookie's `Path=/dashboard` scope means it is only ever attached to\nrequests under `/dashboard` \u2014 this endpoint's cookie support exists\nfor literal SPEC.md \u00a74.6 fidelity and for any client that presents\nthe cookie value explicitly (not from a browser's automatic cookie\njar). The dashboard's own approve/deny buttons instead call\n`POST /dashboard/approvals/{id}/decide` (app/dashboard.py), which\nthe session cookie *does* reach \u2014 see docs/adr/0006 for the full\nreasoning and the concrete proof (a curl-cookie-jar Path test) that\nled to that split.",
+        "operationId": "decide_approval_endpoint_v1_firewall_approvals__approval_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "title": "Approval Id",
+              "type": "string"
             }
           }
-        }
-      },
-      "ErrorEnvelope": {
-        "type": "object",
-        "required": ["error"],
-        "description": "SPEC.md §4.8 ERR-001.",
-        "properties": {
-          "error": {
-            "type": "object",
-            "required": ["code", "type", "message", "transaction_id"],
-            "properties": {
-              "code": {"type": "string"},
-              "type": {"type": "string"},
-              "message": {"type": "string"},
-              "transaction_id": {"type": "string"},
-              "details": {"type": "object"}
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Approval Endpoint"
+      }
+    },
+    "/v1/firewall/requests/{transaction_or_request_id}": {
+      "get": {
+        "description": "SPEC.md \u00a74.5. API-011: a cross-identity read returns 404, not\n403, so the endpoint never confirms another identity's transaction\nexists.",
+        "operationId": "get_transaction_status_v1_firewall_requests__transaction_or_request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transaction_or_request_id",
+            "required": true,
+            "schema": {
+              "title": "Transaction Or Request Id",
+              "type": "string"
             }
           }
-        }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Transaction Status"
       }
     }
   }

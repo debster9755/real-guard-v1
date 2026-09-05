@@ -10,7 +10,12 @@ Checks (PLAN.md §6 Phase 0 automated checks, plus TST-023):
      corpus.schema.json, with the §9.3 / §17.4 bucket distribution (TST-023).
   5. Every case's expected_policy_hits reference real rule ids in
      default_policy.yaml.
-  6. openapi.json is present and has exactly 8 paths (API-001, ADR 0001).
+  6. openapi.json is present, contains SPEC.md §4.1's 8 canonical paths, and
+     has exactly 11 paths in total — the 8 canonical plus the 3 dashboard-
+     session-support routes (login/logout/CSRF-decide) ADR 0006 added in
+     Phase 4 and ADR 0010 formally reconciled in Phase 8 (docs/adr/0010).
+     Whether openapi.json itself matches the live application byte-for-byte
+     is a separate check: `python scripts/generate_openapi.py --check`.
 
 Exit code 0 on success, 1 on any failure. Intended to become a CI job in
 Phase 1 (WS-01) — see .github/workflows/ci.yml once authored.
@@ -117,10 +122,42 @@ def main() -> int:
         "every expected_policy_hits entry references a real rule id in default_policy.yaml",
     )
 
-    # 5. openapi.json — 8 canonical endpoints.
+    # 5. openapi.json — SPEC.md §4.1's 8 canonical endpoints, plus the 3
+    # dashboard-session-support routes ADR 0006/ADR 0010 document.
     openapi = json.loads((ROOT / "openapi.json").read_text())
-    n_paths = len(openapi["paths"])
-    check(n_paths == 8, f"openapi.json declares exactly 8 paths (found {n_paths})")
+    canonical_paths = {
+        "/v1/chat/completions",
+        "/v1/firewall/approvals",
+        "/v1/firewall/requests/{transaction_or_request_id}",
+        "/v1/firewall/approvals/{approval_id}/decision",
+        "/dashboard",
+        "/healthz",
+        "/readyz",
+        "/metrics",
+    }
+    dashboard_support_paths = {
+        "/dashboard/login",
+        "/dashboard/logout",
+        "/dashboard/approvals/{approval_id}/decide",
+    }
+    actual_paths = set(openapi["paths"])
+    missing_canonical = canonical_paths - actual_paths
+    check(
+        not missing_canonical,
+        "openapi.json declares all 8 SPEC.md §4.1 canonical paths "
+        f"(missing: {missing_canonical or 'none'})",
+    )
+    unexpected = actual_paths - canonical_paths - dashboard_support_paths
+    check(
+        not unexpected,
+        f"openapi.json has no undocumented paths beyond the 8 canonical + 3 "
+        f"dashboard-support ones (unexpected: {unexpected or 'none'})",
+    )
+    check(
+        len(actual_paths) == 11,
+        f"openapi.json declares exactly 11 paths total: 8 canonical + 3 "
+        f"dashboard-support (found {len(actual_paths)})",
+    )
 
     return report()
 
