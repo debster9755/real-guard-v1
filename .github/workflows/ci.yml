@@ -99,13 +99,25 @@ jobs:
         # (see the ADR for the per-finding breakdown), never a real
         # credential. A genuinely new secret is *not* in the baseline and
         # still fails this step.
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
-          GITLEAKS_ENABLE_COMMENTS: false
-        with:
-          args: >-
-            detect --source . -v
+        #
+        # ADR 0013 (Phase 9 publication): originally `gitleaks/gitleaks-
+        # action@v2`, replaced after the repository's first-ever real CI run
+        # showed two problems with it, neither visible from static YAML
+        # review — (1) its action.yml declares no `inputs:` at all, so the
+        # `args`/`--baseline-path` this step relied on were silently
+        # ignored ("Unexpected input(s) 'args'"); (2) lacking that, it falls
+        # back to its own push-event before..after diff, which is invalid
+        # on a repository's very first push (the "before" ref has no
+        # parent — "ambiguous argument ...^..: unknown revision"). Calling
+        # the real `gitleaks` binary directly restores the exact full-
+        # history, baseline-checked command already verified locally
+        # (docs/adr/0011), pinned to the same 8.30.1 release this project
+        # verifies with locally.
+        run: |
+          curl -sSL -o /tmp/gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . -v \
             --baseline-path docs/security/gitleaks-baseline.json
 
       - name: Set up Python 3.12

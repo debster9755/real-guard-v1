@@ -104,7 +104,19 @@ def test_export_events_are_hash_chained(tmp_path: Path) -> None:
         assert event["event_hash"] != genesis
 
 
-def test_cli_main_writes_jsonl_to_stdout(tmp_path: Path, capsys: Any) -> None:
+def test_cli_main_writes_jsonl_to_stdout(
+    tmp_path: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    """`main()` builds its own engine from `load_settings().DATABASE_URL`
+    (app/cli.py) rather than taking one as an argument, so this test must
+    point that env var at the exact same tmp_path SQLite file `_engine`
+    writes to — otherwise `main()` falls back to Settings' real default
+    (`sqlite:///./data/realguard.db`) and this test silently exercises a
+    completely different, developer-machine-local database instead of the
+    two rows it just wrote (ADR 0013: found on the project's first-ever
+    fresh checkout, in CI, where no such leftover file exists)."""
+    db_url = f"sqlite:///{tmp_path / 'cli_test.db'}"
+    monkeypatch.setenv("DATABASE_URL", db_url)
     engine = _engine(tmp_path)
     _write_sample_events(engine)
 
@@ -112,7 +124,7 @@ def test_cli_main_writes_jsonl_to_stdout(tmp_path: Path, capsys: Any) -> None:
     assert rc == 0
     out = capsys.readouterr().out
     lines = [line_ for line_ in out.splitlines() if line_.strip()]
-    assert len(lines) >= 2  # settings.DATABASE_URL default — see conftest env below
+    assert len(lines) >= 2
     for line_ in lines:
         json.loads(line_)  # every line is a standalone, valid JSON object
 
