@@ -3,15 +3,52 @@
 All notable changes to this project are documented here, in [Keep a
 Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
-**Framing note** (see `docs/adr/0010` decision 4): nothing has been tagged
-or released yet — `v0.1.0` is Phase 9's own deliverable
-(`PLAN.md` §13's versioning plan). Keep a Changelog reserves dated
-`## [x.y.z]` headings for actual releases, so everything below lives under
-a single `[Unreleased]` heading, broken into per-phase subsections ordered
-most-recent-first. Each subsection cites its ADR (where one exists) and the
-short commit SHA that landed it (`git log --oneline` on `main`).
+**Framing note** (see `docs/adr/0010` decision 4, superseded by
+`docs/adr/0013`): `v0.1.0` was tagged and released for real on 2026-09-05
+— see [the GitHub release](https://github.com/debster9755/real-guard-v1/releases/tag/v0.1.0).
+Everything that had accumulated under `[Unreleased]` through Phase 9 (the
+Playwright gap-closure and the dependabot/CI fixes that followed it) is
+now filed under the dated `[0.1.0]` heading below, broken into per-phase
+subsections ordered most-recent-first. Each subsection cites its ADR
+(where one exists) and the short commit SHA that landed it (`git log
+--oneline` on `main`).
 
 ## [Unreleased]
+
+Nothing yet — the next change to land here starts the road to `v0.2.0`.
+
+## [0.1.0] - 2026-09-05
+
+### Phase 9 publication (`docs/adr/0013`)
+
+The repository was created, pushed, protected, tagged, and released for
+real, following the explicit go-ahead ("proceed with phase 9").
+
+- **Created** `github.com/debster9755/real-guard-v1` (public), with the
+  description and six topics drafted in `docs/release/repo-metadata.md`.
+- **Enabled** secret scanning, push protection, vulnerability alerts, and
+  automated (Dependabot) security fixes; confirmed Discussions off, per
+  `PLAN.md` §13.
+- **Fixed two genuine bugs found only by the repository's first-ever real
+  CI run against its first-ever genuinely fresh checkout** — a
+  `gitleaks/gitleaks-action@v2` input-schema mismatch (its `action.yml`
+  accepts no custom inputs, so this workflow's `--baseline-path` was
+  silently ignored, and its default push-event diff is itself invalid on
+  a repository's first push) and a latent `tests/test_cli.py` isolation
+  bug (a test exported audit rows from the developer machine's real,
+  gitignored default database rather than the tmp-path rows it had just
+  written, always passing locally only because 93 leftover rows had
+  quietly accumulated there over months). Full account, including the
+  real CI job names and both fixes, in `docs/adr/0013`.
+- **Applied branch protection** to `main`: both real CI jobs (`lint,
+  type-check, test`; `security (pip-audit, Trivy, gitleaks)`) required
+  and strict, 1 required approving review, `enforce_admins`, linear
+  history, no force-push or deletion.
+- **Tagged and released** `v0.1.0` — [github.com/debster9755/real-guard-v1/releases/tag/v0.1.0](https://github.com/debster9755/real-guard-v1/releases/tag/v0.1.0).
+- **Ran the real fresh-clone exit gate** for the first time against the
+  actual public URL: `docker compose up --build -d` against a genuine
+  `git clone`, `/healthz` and `/readyz` both `200`, `docker compose down`
+  clean.
 
 ### Dependabot configuration — closing the last named Phase 9 gap
 

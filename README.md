@@ -3,17 +3,7 @@
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)
-
-> No CI-status badge is shown deliberately: this repository has no GitHub
-> remote yet (`git remote -v` is empty — publishing it is Phase 9's own
-> deliverable), so no CI service has ever actually run
-> `.github/workflows/ci.yml` against it. The workflow itself is real (lint,
-> strict `mypy`, the full test suite, contract validation, an OpenAPI-drift
-> check, README-command/link/placeholder checks, `pip-audit`, and Trivy)
-> and every one of those checks is run and reported, with real output, in
-> this phase's own completion report — a static badge claiming a passing
-> build with no build to point at would be exactly the kind of invented
-> claim this project's own rules forbid.
+![CI](https://github.com/debster9755/real-guard-v1/actions/workflows/ci.yml/badge.svg)
 
 An open-source AI Firewall (FWaaS) for LLM and agent traffic: an
 OpenAI-compatible proxy that inspects prompts, retrieved context, model
@@ -21,13 +11,17 @@ output and tool calls against a declarative policy, and returns `ALLOW`,
 `DENY`, or `NEED_APPROVAL` before anything reaches an upstream model or a
 downstream tool.
 
-**Status.** Phases 0-8 are complete against [`PLAN.md`](PLAN.md) (build
-sequence) and [`SPEC.md`](SPEC.md) (normative contract). Nothing in this
-document is aspirational — every command shown was actually run, and every
-number traces to [`docs/benchmarks.md`](docs/benchmarks.md). For the full
-phase-by-phase history of what shipped when, see
-[`CHANGELOG.md`](CHANGELOG.md); for the reasoning behind every judgment
-call along the way, see [`docs/adr/`](docs/adr/) (ten ADRs, 0001-0010).
+**Status.** Phase 9 is complete: `v0.1.0` is tagged and released, and this
+repository is public at
+[github.com/debster9755/real-guard-v1](https://github.com/debster9755/real-guard-v1)
+(release notes: [v0.1.0](https://github.com/debster9755/real-guard-v1/releases/tag/v0.1.0)).
+All of `PLAN.md` (build sequence) and `SPEC.md` (normative contract) is
+implemented. Nothing in this document is aspirational — every command
+shown was actually run, and every number traces to
+[`docs/benchmarks.md`](docs/benchmarks.md). For the full phase-by-phase
+history of what shipped when, see [`CHANGELOG.md`](CHANGELOG.md); for the
+reasoning behind every judgment call along the way, see
+[`docs/adr/`](docs/adr/) (thirteen ADRs, 0001-0013).
 
 Detection in this system is **heuristic**. It will have false positives and
 false negatives. It is one layer of defence in depth, not a substitute for
@@ -1362,8 +1356,9 @@ project has found and documented rather than silently carried:
 - `pyproject.toml` still pins dependencies by version *range*, not a
   hash-locked requirements file — building a lockfile workflow was judged
   out of scope through Phase 8; a real, named gap.
-- `gitleaks` (full-history secret scanning) is Phase 9's own deliverable
-  and has not been run.
+- (Resolved in Phase 9: `gitleaks` full-history secret scanning now runs
+  both locally and as a required, blocking `main` branch check — see
+  `docs/adr/0011` and `docs/adr/0013`.)
 - Four adversarial-review findings remain open residual risks (a
   no-`+`-prefix phone number not recognised as PII; long-form shell flags
   evading one specific rule's pattern list; visibly-punctuation-split
@@ -1397,16 +1392,18 @@ LiteLLM as the provider abstraction · SIEM connectors · signed
 tamper-evident audit chains · SDKs for non-OpenAI-shaped clients · a hosted
 control plane, billing, SSO.
 
-**Immediately next (Phase 9, this project's own remaining phase):**
-public GitHub repository, branch protection and required checks, `gitleaks`
-full-history scan, dependency hash-locking, and the `v0.1.0` tag.
+**Phase 9 (complete):** public GitHub repository, branch protection and
+required checks, `gitleaks` full-history scan, and the `v0.1.0` tag and
+release — all real, all done (`docs/adr/0013`). Dependency hash-locking
+remains the one carried-forward, named gap (version ranges, not a
+hash-locked lockfile; see the `pyproject.toml` note above).
 
 ## Contributing and disclosure
 
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development setup (points back to
   "Quick start" above rather than duplicating it), how to run the test
   suite, and the coding conventions and ADR discipline actually practiced
-  across ten ADRs.
+  across thirteen ADRs.
 - [`SECURITY.md`](SECURITY.md) — vulnerability disclosure process and every
   residual risk, stated without hedging.
 - [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1.
