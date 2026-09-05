@@ -1,4 +1,5 @@
-"""WS-04 orchestrator tests. SPEC.md §2.3 (DET-012..014)."""
+"""WS-04 orchestrator tests. SPEC.md §2.3 (DET-012..014). SPEC.md TST-020
+("no detector exceeds its deadline on adversarial input") — Phase 7/WS-14."""
 
 from __future__ import annotations
 
@@ -7,7 +8,11 @@ import time
 from app.detectors.base import Category, Confidence, Finding
 from app.normalizer import normalize
 from app.orchestrator import DetectorOrchestrator
+from app.pipeline import build_input_detectors
 from app.planes import Plane
+from app.policy import load_policy
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 
 class _GoodDetector:
@@ -95,3 +100,51 @@ async def test_empty_detector_list_yields_no_findings() -> None:
     result = await orch.run(normalize("hello"), Plane.input, "salt")
     assert result.findings == ()
     assert result.degraded is False
+
+
+# --- TST-020 property test: "no detector exceeds its deadline on
+# adversarial input" ---------------------------------------------------
+#
+# Phase 7 (WS-14) adds this — Phase 2 (ADR 0003) only had a normalizer
+# property test, not one covering DET-012's per-detector deadline. Runs
+# every *real* bundled detector (not a fake) against Hypothesis-generated
+# arbitrary text, including strings deliberately shaped to provoke
+# catastrophic regex backtracking (long repeated runs of a few characters
+# that almost, but don't quite, match a pattern's tail). The property under
+# test is `asyncio.wait_for`'s own guarantee (app/orchestrator.py): the
+# orchestrator's wall-clock return time is bounded by
+# `detector_timeout_ms` plus a small fixed overhead *regardless* of how
+# long a synchronous `scan()` call actually takes inside its worker
+# thread — a slow/hung detector's thread is abandoned, not force-killed,
+# so `scan()` itself is not bounded by this property; the caller-visible
+# orchestrator result is, which is what actually matters for DET-012's own
+# "the platform must remain responsive" intent.
+_REAL_POLICY = load_policy("policies/default_policy.yaml")
+_REAL_DETECTORS = build_input_detectors(_REAL_POLICY)
+_DEADLINE_MS = 250
+# Generous slack over the deadline: thread-pool scheduling jitter under
+# Hypothesis's own shrinking/replay overhead, not a claim about steady-state
+# latency (docs/benchmarks.md is the authority on that).
+_MAX_ALLOWED_MS = _DEADLINE_MS + 2000
+
+
+@given(
+    st.one_of(
+        st.text(max_size=3000),
+        # Adversarial shapes literature associates with regex backtracking:
+        # long runs of a repeated near-miss character/word.
+        st.text(alphabet="aA ", min_size=0, max_size=3000),
+        st.text(alphabet="ignore previous instructions ", min_size=0, max_size=3000),
+    )
+)
+@settings(max_examples=300, deadline=None)
+async def test_real_detectors_bounded_by_deadline_on_adversarial_input(text: str) -> None:
+    orch = DetectorOrchestrator(_REAL_DETECTORS, detector_timeout_ms=_DEADLINE_MS)
+    t0 = time.perf_counter()
+    result = await orch.run(normalize(text), Plane.input, "salt")
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    assert elapsed_ms < _MAX_ALLOWED_MS, (
+        f"orchestrator took {elapsed_ms:.1f}ms (> {_MAX_ALLOWED_MS}ms budget) "
+        f"for input of length {len(text)}"
+    )
+    assert result is not None  # must not raise, regardless of input (DET-014)

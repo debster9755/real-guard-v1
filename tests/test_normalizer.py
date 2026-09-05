@@ -1,5 +1,15 @@
 """WS-04 normalizer tests. SYS-011 (idempotence), SYS-012 (bounded depth),
-DET-007/008 (normalization + decoding)."""
+DET-007/008 (normalization + decoding).
+
+Phase 7 (docs/adr/0009) raises every `max_examples` below from its Phase 2
+value (500/500/200/100) to a permanently higher one: measured runtime for
+this whole file was well under a second at the old counts, so the increase
+costs nothing meaningful in CI while giving Hypothesis considerably more
+room to find a shrinking counterexample. A separate, one-off 5,000-example
+manual run (not checked in — see the Phase 7 completion report) is the
+actual high-rigor validation evidence; these checked-in numbers are the
+ongoing regression bar, not that evidence itself.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +19,7 @@ from hypothesis import strategies as st
 
 
 @given(st.text())
-@settings(max_examples=500)
+@settings(max_examples=1000)
 def test_normalize_text_idempotent(text: str) -> None:
     """SYS-011: normalize(normalize(x)) == normalize(x)."""
     once = normalize_text(text)
@@ -18,13 +28,13 @@ def test_normalize_text_idempotent(text: str) -> None:
 
 
 @given(st.text())
-@settings(max_examples=500)
+@settings(max_examples=1000)
 def test_normalize_text_never_raises(text: str) -> None:
     normalize_text(text)  # must not raise for any Unicode input
 
 
 @given(st.text(max_size=2000))
-@settings(max_examples=200)
+@settings(max_examples=500)
 def test_normalize_never_raises(text: str) -> None:
     """§2.2: the normalizer MUST NOT raise, for arbitrary input."""
     result = normalize(text)
@@ -32,7 +42,7 @@ def test_normalize_never_raises(text: str) -> None:
 
 
 @given(st.text(max_size=500))
-@settings(max_examples=100)
+@settings(max_examples=300)
 def test_decode_depth_bounded(text: str) -> None:
     """SYS-012: decoded_variants never exceeds max_decode_depth."""
     result = normalize(text, max_decode_depth=3)

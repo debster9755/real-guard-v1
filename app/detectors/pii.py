@@ -24,9 +24,21 @@ DETECTOR_VERSION = "1.0.0"
 
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _PHONE_RE = re.compile(r"\+\d{1,3}(?:[\s-]?\(?\d{2,4}\)?){2,4}")
-_SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+# Phase 7 (docs/adr/0009): dash is the common US SSN separator and remains
+# the primary form, but a probe confirmed a space- or dot-separated SSN
+# (e.g. "123 45 6789") evaded this pattern entirely pre-fix — a narrow,
+# additive fix: any single one of "-", " " or "." between the three groups,
+# not just "-". Still requires the same three fixed-width digit groups, so
+# this doesn't broaden what counts as SSN-*shaped* text, only which
+# separator within that shape is recognised.
+_SSN_RE = re.compile(r"\b\d{3}[- .]\d{2}[- .]\d{4}\b")
 _CARD_CANDIDATE_RE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
-_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{2,4}){3,8}\b")
+# Phase 7 (docs/adr/0009): IBANs are conventionally printed uppercase but
+# are not case-sensitive data; a probe confirmed a lowercase IBAN (as a
+# user might paste one, e.g. "gb29 nwbk...") evaded this pattern entirely
+# pre-fix. IGNORECASE is a narrow fix — the shape requirement (2 letters +
+# 2 digits + 3-8 grouped alnum chunks) is unchanged, only case sensitivity.
+_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{2,4}){3,8}\b", re.IGNORECASE)
 _PASSPORT_RE = re.compile(r"\b[A-Z]{1,2}\d{6,9}\b")
 _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 

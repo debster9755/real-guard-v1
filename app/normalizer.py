@@ -16,24 +16,44 @@ from dataclasses import dataclass, field
 from urllib.parse import unquote
 
 # DET-007: characters stripped before detection.
-_ZERO_WIDTH = "​‌‍‎‏﻿"
+# Phase 7 (docs/adr/0009) additions, found by the adversarial-evasion pass:
+# WORD JOINER (U+2060) and three of the four invisible math operators
+# (U+2061 FUNCTION APPLICATION, U+2062 INVISIBLE TIMES, U+2063 INVISIBLE
+# SEPARATOR — U+2064 INVISIBLE PLUS is included too, for the same reason)
+# and SOFT HYPHEN (U+00AD) all evaded detection pre-fix exactly like the
+# zero-width characters already stripped here: invisible-by-default,
+# insertable mid-word, and outside the previous _ZERO_WIDTH/_BIDI_CONTROLS
+# sets. A confirmed real gap, fixed narrowly rather than left residual —
+# see the Phase 7 completion report for the before/after probe.
+_ZERO_WIDTH = "​‌‍‎‏﻿⁠⁡⁢⁣⁤­"
 _BIDI_CONTROLS = "‪‫‬‭‮⁦⁧⁨⁩"
-_STRIP_CHARS = _ZERO_WIDTH + _BIDI_CONTROLS
+# Variation selectors (U+FE00-FE0F) are invisible modifiers for a preceding
+# base character (their usual job is picking an emoji-vs-text glyph); one
+# inserted after an ordinary ASCII letter renders invisibly and, like the
+# characters above, evaded detection pre-fix. Stripped as a full 16-code-
+# point range rather than named individually.
+_VARIATION_SELECTORS = "".join(chr(cp) for cp in range(0xFE00, 0xFE10))
+_STRIP_CHARS = _ZERO_WIDTH + _BIDI_CONTROLS + _VARIATION_SELECTORS
 
 # A small, explicit confusables table — common Cyrillic/Greek lookalikes
 # folded to their ASCII look-alike. Not exhaustive (a full Unicode
 # confusables table is a V1.1-scale undertaking); DET-009 already accepts
 # that no detector is complete against every encoding, and normalization
-# is one layer, not a guarantee.
+# is one layer, not a guarantee. Phase 7 (docs/adr/0009) added lowercase
+# Cyrillic "т"/Greek "τ" (both visually near-identical to Latin "t" —
+# only their uppercase forms were folded before) and Cyrillic "ѕ" (visually
+# identical to Latin "s"), each confirmed to evade the prompt_injection
+# detector pre-fix via a direct probe against "instrucтions"/"instrucτions".
 _HOMOGLYPHS: dict[str, str] = {
     # Cyrillic -> Latin
     "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+    "т": "t", "ѕ": "s",
     "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
     "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X", "і": "i", "І": "I",
     # Greek -> Latin
-    "α": "a", "ο": "o", "ρ": "p", "υ": "y", "Α": "A", "Β": "B", "Ε": "E",
-    "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M", "Ν": "N", "Ο": "O",
-    "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
+    "α": "a", "ο": "o", "ρ": "p", "υ": "y", "τ": "t", "Α": "A", "Β": "B",
+    "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M", "Ν": "N",
+    "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
 }  # fmt: skip
 
 _WHITESPACE_RE = re.compile(r"\s+")

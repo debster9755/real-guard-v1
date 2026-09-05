@@ -22,7 +22,11 @@ from app.planes import Plane
 DETECTOR_ID = "secrets"
 DETECTOR_VERSION = "1.0.0"
 
-_AWS_ACCESS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+# Phase 7 (docs/adr/0009): AKIA (long-term IAM access keys) is the classic
+# prefix, but AWS STS temporary credentials use ASIA — visually identical
+# shape, same 16-char suffix. A probe confirmed an ASIA-prefixed key
+# evaded this pattern entirely pre-fix; narrow, additive alternation fix.
+_AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
 _PROVIDER_KEY_RE = re.compile(r"\b(?:sk-live-|sk-test-|sk-|gsk_|ghp_)[A-Za-z0-9_-]{16,}\b")
 _PEM_BLOCK_RE = re.compile(r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----")
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")

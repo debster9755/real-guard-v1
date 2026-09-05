@@ -44,6 +44,14 @@ jobs:
         # `ollama` marker definitions in pyproject.toml.
         run: pytest --cov=app --cov-report=term-missing --cov-report=xml -q
 
+      - name: Coverage gate (PLAN.md §10.2 G14: >= 85% line, >= 75% branch)
+        # Phase 7 / WS-14 ("a coverage gate" — see
+        # docs/adr/0009-phase7-benchmarking-and-adversarial-review.md):
+        # coverage.py's own --fail-under enforces one blended percentage,
+        # not G14's two separate line/branch thresholds, so this reads the
+        # coverage.xml the previous step already produced instead.
+        run: python scripts/check_coverage_gates.py coverage.xml
+
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:

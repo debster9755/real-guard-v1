@@ -9,6 +9,7 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+coverage.xml
 
 # Environment / secrets — CFG-004: .env must never be tracked
 .env

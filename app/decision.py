@@ -14,6 +14,7 @@ alongside the tool_calls detector, without needing this evaluator rebuilt.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -120,17 +121,34 @@ def _eval_condition(condition: dict[str, Any], ctx: DecisionContext) -> bool:
             return isinstance(value, int | float) and value < condition["numeric_lt"]
         if "sql_verb_in" in condition and isinstance(value, str):
             verbs = {v.upper() for v in condition["sql_verb_in"]}
-            first_word = value.strip().split(None, 1)[0].upper() if value.strip() else ""
+            stripped = _strip_sql_comments(value).strip()
+            first_word = stripped.split(None, 1)[0].upper() if stripped else ""
             return first_word in verbs
         if "sql_unbounded_mutation" in condition and isinstance(value, str):
-            upper = value.upper()
-            is_mutation = any(upper.strip().startswith(v) for v in ("DELETE", "UPDATE"))
+            upper = _strip_sql_comments(value).strip().upper()
+            is_mutation = any(upper.startswith(v) for v in ("DELETE", "UPDATE"))
             return is_mutation and "WHERE" not in upper
         if "shell_pattern_in" in condition and isinstance(value, str):
             return _matches_shell_pattern(value, condition["shell_pattern_in"])
         return False
 
     return False
+
+
+# Phase 7 (docs/adr/0009): a probe confirmed a leading SQL comment
+# ("-- comment\nDROP TABLE customers;") made both sql_verb_in and
+# sql_unbounded_mutation evaluate against "--" instead of the real verb,
+# evading the destructive_sql_command rule entirely (ALLOW instead of
+# DENY) — a real, full-bypass gap, not just a missing reason code. Fixed
+# narrowly by stripping SQL line (`--`) and block (`/* */`) comments before
+# either condition looks at the first word, rather than reopening either
+# condition's schema or semantics.
+_SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _strip_sql_comments(sql: str) -> str:
+    return _SQL_BLOCK_COMMENT_RE.sub(" ", _SQL_LINE_COMMENT_RE.sub(" ", sql))
 
 
 _SHELL_PATTERNS = {
@@ -142,8 +160,18 @@ _SHELL_PATTERNS = {
 }
 
 
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+
+
 def _matches_shell_pattern(command: str, pattern_names: list[str]) -> bool:
-    lowered = command.lower()
+    # Phase 7 (docs/adr/0009): a probe confirmed "rm  -rf" (a doubled space)
+    # evaded the literal "rm -rf" substring match entirely — collapsing
+    # whitespace runs to a single space before matching is a narrow fix for
+    # that specific evasion. It does not close every rewording of a shell
+    # command (e.g. "rm --recursive --force" uses different tokens
+    # entirely, not just different whitespace) — that broader gap is a
+    # documented residual risk, not fixed here (see SPEC.md §19.5).
+    lowered = _WHITESPACE_RUN_RE.sub(" ", command.lower())
     for name in pattern_names:
         for needle in _SHELL_PATTERNS.get(name, ()):
             if needle.lower() in lowered:

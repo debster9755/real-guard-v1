@@ -1782,6 +1782,15 @@ An **external end user** typing into an app the firewall protects · a **malicio
 
 Stated in `SECURITY.md` without hedging: heuristic detection has false positives and negatives; the audit chain is tamper-**evident**, not tamper-proof; the MVP is single-instance; streaming is unsupported; a compromised reviewer credential defeats human-in-the-loop entirely; and the firewall does not and cannot know the calling application's authorization model.
 
+**Phase 7 adversarial-review findings (docs/adr/0009).** Thirteen deliberate evasion attempts were run against the real detectors; nine confirmed real gaps, of which seven were fixed (narrow, additive, corpus-preserving — see the ADR). The four that were *not* fixed, each with a test in `tests/test_adversarial.py::TestDocumentedResidualRisks` pinning the current behaviour so a silent regression (or an unnoticed future fix) would be caught:
+
+- **THR-004 extension** — a domestic phone number with no leading `+` (E.164 form) is not recognised as PII at all. Not fixed: a general national-phone-number pattern is a well-documented false-positive source (order numbers, zip codes, dates), and PLAN.md's own R1 risk exists to warn against exactly this trade.
+- **THR-008 extension** — a destructive shell command reworded with long-form flags (`rm --recursive --force` vs. the recognised `rm -rf`) evades the `destructive_sql_command`/`destructive_shell_command` rule's own pattern list, though today's default policy still denies the call overall (the tool itself is not allowlisted). An open-ended alternate-spelling arms race, judged out of a "narrow fix"'s scope.
+- **THR-001 extension** — splitting a keyword with ordinary visible punctuation or spaces (`I.g.n.o.r.e`, `I g n o r e`) evades every pattern; these are readable characters, not invisible ones normalization can strip, and closing this generically risks a much higher false-positive rate against ordinary spaced-out or acronym-style text.
+- **THR-003 restated with a confirmed bound** — a base64 payload nested five layers deep is not decoded. Not a bug: `MAX_DECODE_DEPTH = 3` (SYS-012) is a deliberate bound, confirmed still exactly 3; raising it arbitrarily trades this residual risk for a denial-of-service one (THR-015, unbounded decode recursion).
+
+Seven other probes (Unicode confusables missing from the homoglyph table; invisible characters outside the previously-stripped set; an SSN/IBAN separator or case variant; an AWS STS temporary-credential prefix; a SQL-comment-prefixed destructive statement; a whitespace-doubled shell command) were real gaps and are now fixed — see `docs/adr/0009` for each and `tests/test_adversarial.py::TestFixedEvasions` for the pinned regression test.
+
 ---
 
 ## 20. Acceptance criteria and traceability
