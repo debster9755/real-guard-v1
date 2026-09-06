@@ -101,6 +101,15 @@ same `docs/adr/0006` guarantees — and still needs no Node toolchain.
   review modal is also not a focus trap (Escape closes it; focus is not
   confined to the dialog).
 
+### Dependabot: `npm` ecosystem for `web/`
+
+- **Added** an `npm` entry to `.github/dependabot.yml` (`directory: /web`).
+  `PLAN.md` §13's original ecosystem list (pip, GitHub Actions, Docker)
+  predates `web/`; its absence is why the first `web/` dependency PR (#14,
+  a `postcss` bump) arrived as an unconfigured security-update PR rather
+  than a scheduled version-update one — GitHub's advisory-driven security
+  updates don't need a config entry, but routine version updates do.
+
 ## [0.1.0] - 2026-09-05
 
 ### Phase 9 publication (`docs/adr/0013`)
