@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens for the real-guard-v1 reviewer console.
+ *
+ * Values are `R G B` triplets so tailwind.config.ts can consume them as
+ * `rgb(var(--rg-x) / <alpha-value>)` and keep opacity modifiers working.
+ * Light is the base; `.dark` (toggled on <html> by components/theme.tsx,
+ * persisted in localStorage) redefines the same names — no parallel colour
+ * scale, no `dark:` variant needed for anything that already uses a token.
+ *
+ * Contrast, checked against WCAG AA for normal text (4.5:1):
+ *   light  ink #0f172a on canvas #f8fafc  -> 16.9:1
+ *   light  muted #52627a on surface #ffffff ->  6.6:1
+ *   light  brand #4f46e5 on surface #ffffff ->  6.6:1
+ *   dark   ink #e6ecf5 on canvas #0a1020   -> 15.1:1
+ *   dark   muted #9aa9c0 on surface #131b2d ->  6.7:1
+ *   dark   brand #a5b0fb on surface #131b2d ->  7.6:1
+ */
+:root {
+  --rg-canvas: 248 250 252;
+  --rg-surface: 255 255 255;
+  --rg-elevated: 241 245 249;
+  --rg-line: 226 232 240;
+  --rg-ink: 15 23 42;
+  --rg-muted: 82 98 122;
+  --rg-brand: 79 70 229;
+  --rg-brand-soft: 238 238 255;
+  --rg-brand-ink: 255 255 255;
+  --rg-ok: 4 120 87;
+  --rg-warn: 180 83 9;
+  --rg-danger: 190 18 60;
+  --rg-info: 3 105 161;
+  color-scheme: light;
+}
+
+.dark {
+  --rg-canvas: 10 16 32;
+  --rg-surface: 19 27 45;
+  --rg-elevated: 27 37 58;
+  --rg-line: 45 58 84;
+  --rg-ink: 230 236 245;
+  --rg-muted: 154 169 192;
+  --rg-brand: 165 176 251;
+  --rg-brand-soft: 33 40 74;
+  --rg-brand-ink: 12 17 34;
+  --rg-ok: 52 211 153;
+  --rg-warn: 251 191 36;
+  --rg-danger: 251 113 133;
+  --rg-info: 56 189 248;
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: rgb(var(--rg-canvas));
+  color: rgb(var(--rg-ink));
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A focus ring that is visible in both themes, applied via :focus-visible so
+   pointer users never see it. */
+:focus-visible {
+  outline: 2px solid rgb(var(--rg-brand));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
