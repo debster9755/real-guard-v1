@@ -18,7 +18,7 @@ dependencies = [
     "jinja2>=3.1,<4.0",
     "python-multipart>=0.0.9,<1.0",  # Phase 4: Starlette Request.form() for the dashboard login POST
     "prometheus-client>=0.21,<1.0",
-    "structlog>=24.4,<25.0",
+    "structlog>=24.4,<27.0",
 ]
 
 [project.optional-dependencies]
