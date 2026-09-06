@@ -1,5 +1,12 @@
 # Dependabot configuration (PLAN.md §13: "Dependabot: on for pip, GitHub
 # Actions, and Docker ecosystems"). Schema: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# `npm` (below) is a post-`v0.1.0` addition, not in PLAN.md §13's original
+# list — that list predates `web/` (ADR 0014, PR #13). Its absence here is
+# exactly why PR #14 ("Bump postcss ... in /web") arrived as an *unconfigured*
+# security-update PR rather than a scheduled version-update one: Dependabot's
+# security updates run off GitHub's advisory database regardless of this
+# file, but routine version bumps for an ecosystem need an explicit entry.
 version: 2
 
 updates:
@@ -39,3 +46,16 @@ updates:
       - "docker"
     commit-message:
       prefix: "deps(docker)"
+
+  # The /console SPA's dependencies (ADR 0014): package.json/package-lock.json
+  # under web/.
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+    commit-message:
+      prefix: "deps(npm)"
