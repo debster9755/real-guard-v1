@@ -41,15 +41,16 @@ upstream-provider safety controls or application-level authorization.
 8. [Ollama / Qwen3-8B setup](#ollama-qwen3-8b-setup)
 9. [Generic provider setup](#generic-provider-setup)
 10. [Dashboard](#dashboard)
-11. [Demonstrations](#demonstrations)
-12. [API reference](#api-reference)
-13. [Policy examples](#policy-examples)
-14. [Testing](#testing)
-15. [Measured results](#measured-results)
-16. [Security and privacy](#security-and-privacy)
-17. [Limitations](#limitations)
-18. [Roadmap](#roadmap)
-19. [Contributing and disclosure](#contributing-and-disclosure)
+11. [Interactive console (`/console`)](#interactive-console-console)
+12. [Demonstrations](#demonstrations)
+13. [API reference](#api-reference)
+14. [Policy examples](#policy-examples)
+15. [Testing](#testing)
+16. [Measured results](#measured-results)
+17. [Security and privacy](#security-and-privacy)
+18. [Limitations](#limitations)
+19. [Roadmap](#roadmap)
+20. [Contributing and disclosure](#contributing-and-disclosure)
 
 ---
 
@@ -125,6 +126,7 @@ account.
 | Persistence | SQLAlchemy 2.0 + SQLite (WAL) | Typed 2.0 API and precise transaction control for exactly-once resume; WAL for concurrent readers |
 | Migrations | Alembic | Schema evolution without hand-written DDL |
 | Templating | Jinja2 + HTMX (vendored) | A real dashboard with no Node toolchain, no build step and no CDN dependency |
+| Console SPA (additive) | Next.js 15 (static export) + TypeScript + Tailwind + `recharts` | `docs/adr/0014`: a richer optional reviewer UI. `output: 'export'` keeps the single-container, single-port model — static files served by the same FastAPI process, no Node at runtime. Needs Node 22 only to *build*; `/dashboard` above still needs none |
 | Metrics | `prometheus-client` | The de facto scrape format; no collector required |
 | Logging | `structlog` → JSON | Structured records with a field allowlist; SIEM-ready without a SIEM |
 | Testing | pytest, pytest-asyncio, Hypothesis | Property tests earn their place on the normalizer and the state machine |
@@ -285,6 +287,14 @@ Mock mode needs no API key and no model — the built-in `MockProvider`
 returns deterministic synthetic completions, which is what every command
 below actually talks to. See "Mock mode" just below for what that means and
 why it's the default.
+
+**Prerequisites.** Python 3.12 for the local-Python route, or Docker for the
+container route — that is the whole list for *running* real-guard-v1,
+including the `/dashboard` reviewer UI. Node 22 is needed in exactly one
+case: **building** the optional `/console` SPA from source (`npm run build`
+in `web/`, which the Docker image does for you inside its own build stage).
+Running an already-built image needs no Node, and `/dashboard` never needs
+it at all. See "Interactive console (`/console`)" below.
 
 ### Local Python
 
@@ -515,6 +525,13 @@ third-party CDN (HTMX and a small `json-enc` extension are vendored under
 [`docs/adr/0006-reviewer-dashboard-session-auth-and-csrf.md`](docs/adr/0006-reviewer-dashboard-session-auth-and-csrf.md)
 for the full design).
 
+There is now also a second, richer reviewer UI at `/console` — a React/Next.js
+SPA over the same backend, added by
+[`docs/adr/0014-console-spa-frontend.md`](docs/adr/0014-console-spa-frontend.md).
+It is purely additive: everything in this section still works exactly as
+described, and `/dashboard` needs no Node toolchain. See
+"[Interactive console (`/console`)](#interactive-console-console)" below.
+
 **Real screenshots, captured via a real headless-Chromium session.**
 `docs/adr/0010`'s decision 5 originally shipped this section without one —
 no browser-automation tool was available in that environment. That gap is
@@ -673,6 +690,114 @@ template against the header's real semantics and moving what used to be an
 inline `onchange` handler and inline `style` attributes into vendored CSS
 classes, since a real browser enforcing this header would silently drop
 both). `Strict-Transport-Security` is added only when `APP_ENV=production`.
+
+## Interactive console (`/console`)
+
+`/console` is a second, richer reviewer UI: a Next.js 15 App Router SPA
+(TypeScript, Tailwind, `recharts`) served as static files by the same
+FastAPI process, on the same port, from the same origin. It is **additive** —
+`/dashboard` is untouched and remains the minimal, dependency-light
+reference implementation `SPEC.md §2.19` describes. Both work independently
+against the same backend. See
+[`docs/adr/0014-console-spa-frontend.md`](docs/adr/0014-console-spa-frontend.md)
+for the full design and every judgment call.
+
+It has four screens: a sign-in page, an overview with live counters and two
+charts, the approval queue with a review modal, and a decision history.
+Everything it shows comes from `/console/api/*` (`app/console_api.py`),
+which is a thin JSON wrapper over the same `app/approvals.py` functions the
+HTMX dashboard already calls — no second implementation of the approval
+lifecycle, and no number that `/metrics` does not already report.
+
+**Real screenshots, captured by a real headless-Chromium session** —
+`pytest tests/test_console_browser.py -m browser -v`, which drives a real
+`uvicorn` process and a real Chromium through sign-in, the queue, and an
+actual approve that resumes an actual held request. Nothing below is a
+mockup.
+
+![The /console sign-in page](docs/screenshots/console-login.png)
+
+*Sign in with a reviewer key. A service key is refused here (`SEC-006`), and
+the server's real reason is shown rather than a generic failure.*
+
+![The /console overview with stat cards and two charts](docs/screenshots/console-overview.png)
+
+*Overview: the mock-mode banner (`DEP-004`), stat cards, and two `recharts`
+bar charts. Every figure is read out of the same `CollectorRegistry` that
+`/metrics` serves and the same `count_by_state()` query the
+`realguard_approval_queue_depth` gauge runs — `/console` and `/metrics`
+cannot disagree.*
+
+![The /console approval queue](docs/screenshots/console-approvals.png)
+
+*The queue, filtered by any of the eight `SPEC.md §9.1` approval states.*
+
+![The review modal with the transformed preview JSON](docs/screenshots/console-review.png)
+
+*The review modal: transaction id, risk level, reason codes, policy hits,
+the expiry countdown (`APR-007`), and the pretty-printed preview — which is
+the `REDACT`-transformed content only, never the raw request (`APR-012`).
+Deny is disabled until a note is typed; the server enforces that
+independently (`422`), the disabled button is only a convenience.*
+
+![The queue immediately after a real approve](docs/screenshots/console-decided.png)
+
+*Immediately after a real click on Approve. The approval resumed inline
+(`APR-011`) through the same `app/approvals.decide_and_resume()` the
+dashboard and the canonical JSON endpoint use, so its true final state is
+`COMPLETED` — the SPA refetches rather than guessing it.*
+
+### Running it
+
+The Docker image builds the console for you and needs nothing installed on
+your machine but Docker:
+
+```bash
+docker compose up --build
+# then open http://127.0.0.1:8000/console/
+```
+
+To build it from a source checkout instead, you need **Node 22**:
+
+```bash
+cd web && npm ci && npm run build   # -> web/out
+cd .. && uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+`app/console_api.py` serves `app/console_static/` (where the Docker build
+puts it) and falls back to `web/out/` (where a local build puts it). If
+neither exists — a fresh checkout that has never run `npm` — the app starts
+normally, logs one clear warning line, and skips the mount: `/console/api/*`,
+`/dashboard` and `/v1/firewall/*` all keep working. The Python test suite
+runs in exactly that state.
+
+### Honest notes
+
+- **Node 22 is a new prerequisite for building the image from source.** The
+  `Dockerfile` cannot skip its `web-builder` stage conditionally in this
+  MVP, so `docker build` always builds the console even for an operator who
+  only wants `/dashboard`. Measured on the machine this was developed on:
+  a cold, no-cache image build goes from **17.7s to 27.8s** (+10.1s), and
+  the final image from **341MB to 345MB** (+4MB — only the static export
+  ships; no Node, no `npm`, no `node_modules` exist in the runtime image,
+  verified with `command -v node` inside the running container).
+- **`/dashboard` has zero Node dependency and is not going away.** If you
+  want a reviewer UI with no JavaScript build step at all, use it.
+- Next.js's static export inlines its bootstrap `<script>` blocks by
+  default — 40 of them across 6 documents here — and this project's
+  `Content-Security-Policy: default-src 'self'` (`SEC-008`) has no
+  `unsafe-inline`, so a real browser refuses every one and renders a blank
+  page. `web/scripts/externalize-inline.mjs` rewrites them into real
+  same-origin files at build time and fails the build if any survive. The
+  CSP header itself was not weakened. This was found by running a real
+  browser, not by reading the header.
+- The console's session is a **separate** cookie, `rg_console_session` at
+  `Path=/console/api` — distinct from the dashboard's `rg_session` at
+  `Path=/dashboard`, so the two UIs' sessions never interact.
+- The review modal is not a focus trap. Escape closes it and the controls
+  are keyboard-reachable, but focus is not confined to the dialog; a
+  correct trap was judged more subtle than a hand-rolled component should
+  attempt, and a half-correct one is worse than none.
 
 ## Demonstrations
 
@@ -1194,7 +1319,19 @@ this repository has run. Phase 8 adds `tests/test_readme_commands.py` (the
 internal-link checker), and `tests/test_docs_placeholders.py` (the
 `DOC-012` placeholder grep, now covering every published Markdown file, not
 only the README) — see this repository's own completion report for the
-exact new total.
+exact new total. `docs/adr/0014` adds `tests/test_console_api.py` (34 tests,
+plain `TestClient`, no browser and no Node — it runs everywhere, and the
+absence of a frontend build is itself one of the things it asserts) and
+`tests/test_console_browser.py` (2 tests, `browser` marker), which
+self-skips both when Chromium is not launchable and when `web/out` has
+never been built.
+
+Building the `/console` frontend is a separate toolchain, needed only for
+that one UI:
+
+```bash
+cd web && npm ci && npm run lint && npm run build   # tsc --noEmit, then next build + the CSP pass
+```
 
 **One honest, still-open caveat, carried forward from Phase 6 and
 reproduced again in Phase 7 without being fixed:**
@@ -1369,6 +1506,17 @@ project has found and documented rather than silently carried:
 - The dashboard section above now ships with real, Playwright-captured
   screenshots (see `docs/adr/0012`) — the gap `docs/adr/0010` decision 5
   originally named is closed.
+- The `/console` SPA (`docs/adr/0014`) carries three named limitations of
+  its own: the `Dockerfile` cannot skip its `web-builder` stage
+  conditionally, so building the image from source needs Node 22 even for an
+  operator who only wants `/dashboard` (running a pre-built image needs
+  none); its review modal is not a focus trap (Escape closes it and the
+  controls are keyboard-reachable, but focus is not confined to the dialog);
+  and its `/console/api/*` routes are not in `app/metrics.py`'s
+  `ENDPOINT_TEMPLATES`, so they are counted under the `"unmatched"` endpoint
+  label — the same treatment `/dashboard/login` already gets, and no new
+  metric cardinality, but it does mean `/metrics` cannot break console
+  traffic out by route.
 
 ## Roadmap
 
