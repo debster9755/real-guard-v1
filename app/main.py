@@ -49,6 +49,7 @@ from app.approvals import (
 from app.audit import record_decision_event
 from app.auth import IdentityClass, require_reviewer, resolve_decision_identity, resolve_identity
 from app.config import Settings, load_settings
+from app.console_api import register_console_api_routes
 from app.dashboard import register_dashboard_routes
 from app.db import make_engine
 from app.decision import combine_decisions
@@ -285,6 +286,15 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     register_routes(app)
     register_dashboard_routes(app)
+    # ADR 0014: the additive `/console` SPA and its `/console/api/*` JSON
+    # surface. Registered after the dashboard, and last of the three, because
+    # it ends by mounting the built static frontend at `/console` — a
+    # prefix mount that must not be reachable before its own sibling API
+    # routes are registered (app/console_api.py's own docstring). It
+    # degrades gracefully, with one WARNING line, when no `npm run build`
+    # output exists — every Python-only test run and every fresh checkout
+    # is in exactly that state, and `/dashboard` is unaffected either way.
+    register_console_api_routes(app)
     return app
 
 

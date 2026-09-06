@@ -1,0 +1,9 @@
+# Node / Next build artefacts for the /console SPA (docs/adr/0014).
+# `out/` is a build product: the Dockerfile's web-builder stage generates it
+# inside the image, and a local `npm run build` regenerates it on demand.
+# Nothing under here is ever committed.
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo

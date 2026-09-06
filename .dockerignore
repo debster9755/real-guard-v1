@@ -23,6 +23,18 @@ coverage.xml
 *.db-shm
 *.db-wal
 
+# Node / /console build artefacts (ADR 0014 §3). The web-builder stage runs
+# its own `npm ci` against the committed lockfile and its own `npm run
+# build`, so a host-built tree must never enter the build context: a macOS
+# `node_modules` carries platform-specific binaries that would be baked into
+# a Linux image and fail at build time, and a stale host `out/` would be
+# copied over and then silently rebuilt anyway. `web/package.json` and
+# `web/package-lock.json` are deliberately NOT excluded — they are exactly
+# what the builder stage needs.
+web/node_modules
+web/.next
+web/out
+
 # Docs and OS/editor cruft — irrelevant to the runtime image
 docs
 *.md

@@ -274,6 +274,145 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/console/api/approvals": {
+      "get": {
+        "description": "The same two calls `dashboard_index()` makes \u2014 `sweep_expired()`\nthen `list_approvals()` \u2014 with `preview_content` returned as real\nJSON rather than the pre-stringified blob the Jinja template needed\nfor its `<pre>`. APR-012 still holds: this is the already-transformed\npreview `app/approvals.py` stored at creation time, never a second,\nuntransformed query path.\n\n`status` is read straight off the query string (repeatable) rather\nthan declared as a typed list parameter, so the valid values are\nwhatever `app/approvals.list_approvals()` accepts \u2014\n`app/approvals.APPROVAL_STATES` \u2014 with no second, drifting copy of\nthat vocabulary declared here.",
+        "operationId": "console_approvals_console_api_approvals_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Console Approvals"
+      }
+    },
+    "/console/api/approvals/{approval_id}/decide": {
+      "post": {
+        "description": "The exact same `app/approvals.decide_and_resume()` call\n`dashboard_decide()` and the canonical\n`POST /v1/firewall/approvals/{id}/decision` both make \u2014 session\nchecked (SEC-005), CSRF checked (SEC-007), `Idempotency-Key` required\n(API-007) \u2014 returning JSON instead of an HTML fragment, because there\nis no HTMX here to swap one into.\n\nSEC-006: this handler never accepts a bearer key at all, only a\nconsole session, and a console session is only ever minted for a\nreviewer identity (`console_login` above). The body is validated\nexplicitly rather than through a FastAPI `body:` parameter so that a\nmalformed body returns *this* module's flat error shape rather than\n`app/main.py`'s transaction-shaped `RequestValidationError` envelope.",
+        "operationId": "console_decide_console_api_approvals__approval_id__decide_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Console Decide"
+      }
+    },
+    "/console/api/decisions": {
+      "get": {
+        "description": "`list_recent_decisions()` \u2014 the same rows the HTMX dashboard's\nhistory panel renders.",
+        "operationId": "console_decisions_console_api_decisions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Console Decisions"
+      }
+    },
+    "/console/api/login": {
+      "post": {
+        "description": "SEC-005/SEC-006, mirroring `dashboard_login_submit()` exactly: a\nreviewer key is exchanged for a signed session; a service key (or any\nunrecognized key) never gets one. This is the only place a console\nsession is ever minted, so \u2014 exactly as ADR 0006 reasoned for the\nHTMX dashboard \u2014 decoding a cookie later never has to re-derive an\nidentity class.",
+        "operationId": "console_login_console_api_login_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Console Login"
+      }
+    },
+    "/console/api/logout": {
+      "post": {
+        "operationId": "console_logout_console_api_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Console Logout"
+      }
+    },
+    "/console/api/session": {
+      "get": {
+        "description": "Session restore / CSRF refresh on SPA page load. 401 when the\ncookie is absent, tampered or expired \u2014 `verify_session_cookie()`\ntreats all three identically (SEC-005), and so does this.",
+        "operationId": "console_session_console_api_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Console Session"
+      }
+    },
+    "/console/api/stats": {
+      "get": {
+        "description": "ADR 0014 \u00a72: **no new measurement.** Queue depth by state runs the\nsame `count_by_state()` query the `realguard_approval_queue_depth`\ngauge already runs at scrape time; every other number is read\nstraight out of the same `CollectorRegistry` instance `/metrics`\nserves. If a number here looks wrong, it was already wrong in\n`/metrics`.\n\n`mock_mode` is DEP-004's visible mock-mode marker for this UI, the\n`/console` counterpart of the HTMX dashboard's own banner.",
+        "operationId": "console_stats_console_api_stats_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Console Stats"
+      }
+    },
     "/dashboard": {
       "get": {
         "description": "SPEC.md \u00a74.1: `GET /dashboard` requires a reviewer session.\nAlso accepts a reviewer bearer key directly (consistency with the\nrest of the API, and useful for `curl`-based verification) \u2014 in\nthat mode the page renders read-only, since there is no session to\nbind a CSRF token to (see docs/adr/0006). A service identity, by\neither route, gets 403. No credential at all redirects to the login\nscreen rather than a bare 401 \u2014 this is a browser-facing page.",

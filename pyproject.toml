@@ -52,7 +52,18 @@ include = ["app*"]
 [tool.setuptools.package-data]
 # WS-11: templates and vendored dashboard assets (no CDN — SPEC.md §2.19)
 # must ship inside the installed package, not just the source checkout.
-app = ["templates/dashboard/*.html", "static/*.css", "static/vendor/*"]
+app = [
+    "templates/dashboard/*.html",
+    "static/*.css",
+    "static/vendor/*",
+    # ADR 0014: the built `/console` SPA, when one is present. It is a build
+    # product (the Dockerfile's web-builder stage writes it; `npm run build`
+    # in web/ writes web/out for local development), so this glob matches
+    # nothing in a fresh checkout — which is correct and harmless. It exists
+    # so that `pip install .` performed *after* a frontend build carries the
+    # console into the wheel rather than silently dropping it.
+    "console_static/**/*",
+]
 
 # --- Ruff ------------------------------------------------------------------
 [tool.ruff]
