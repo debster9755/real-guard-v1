@@ -31,7 +31,7 @@ dev = [
     "openai>=1.54,<2.0",
     "openapi-spec-validator>=0.7,<1.0",
     "ruff>=0.7,<1.0",
-    "mypy>=1.13,<2.0",
+    "mypy>=1.13,<3.0",
     "types-PyYAML",
     "types-jsonschema",
     "playwright==1.55.0",  # Phase 9 gap-closure (ADR 0012): real headless-Chromium
