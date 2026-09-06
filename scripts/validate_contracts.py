@@ -11,9 +11,10 @@ Checks (PLAN.md §6 Phase 0 automated checks, plus TST-023):
   5. Every case's expected_policy_hits reference real rule ids in
      default_policy.yaml.
   6. openapi.json is present, contains SPEC.md §4.1's 8 canonical paths, and
-     has exactly 11 paths in total — the 8 canonical plus the 3 dashboard-
+     has exactly 18 paths in total — the 8 canonical, plus the 3 dashboard-
      session-support routes (login/logout/CSRF-decide) ADR 0006 added in
-     Phase 4 and ADR 0010 formally reconciled in Phase 8 (docs/adr/0010).
+     Phase 4 and ADR 0010 formally reconciled in Phase 8 (docs/adr/0010),
+     plus the 7 `/console/api/*` routes ADR 0014 added for the console SPA.
      Whether openapi.json itself matches the live application byte-for-byte
      is a separate check: `python scripts/generate_openapi.py --check`.
 
@@ -123,7 +124,11 @@ def main() -> int:
     )
 
     # 5. openapi.json — SPEC.md §4.1's 8 canonical endpoints, plus the 3
-    # dashboard-session-support routes ADR 0006/ADR 0010 document.
+    # dashboard-session-support routes ADR 0006/ADR 0010 document, plus the
+    # 7 console-support routes ADR 0014 documents. The point of this check
+    # is that new API surface is *deliberate*: a route added without being
+    # named here fails the build, exactly as the console routes did on
+    # their first run.
     openapi = json.loads((ROOT / "openapi.json").read_text())
     canonical_paths = {
         "/v1/chat/completions",
@@ -140,6 +145,19 @@ def main() -> int:
         "/dashboard/logout",
         "/dashboard/approvals/{approval_id}/decide",
     }
+    # ADR 0014: the /console SPA's JSON surface. Like the dashboard-support
+    # routes above, these are a *second transport* for operations SPEC.md
+    # already specifies, not new API contract — none of them can do anything
+    # `/v1/firewall/*` and `app/approvals.py` could not already do.
+    console_support_paths = {
+        "/console/api/login",
+        "/console/api/logout",
+        "/console/api/session",
+        "/console/api/approvals",
+        "/console/api/decisions",
+        "/console/api/approvals/{approval_id}/decide",
+        "/console/api/stats",
+    }
     actual_paths = set(openapi["paths"])
     missing_canonical = canonical_paths - actual_paths
     check(
@@ -147,16 +165,19 @@ def main() -> int:
         "openapi.json declares all 8 SPEC.md §4.1 canonical paths "
         f"(missing: {missing_canonical or 'none'})",
     )
-    unexpected = actual_paths - canonical_paths - dashboard_support_paths
+    unexpected = (
+        actual_paths - canonical_paths - dashboard_support_paths - console_support_paths
+    )
     check(
         not unexpected,
         f"openapi.json has no undocumented paths beyond the 8 canonical + 3 "
-        f"dashboard-support ones (unexpected: {unexpected or 'none'})",
+        f"dashboard-support + 7 console-support ones "
+        f"(unexpected: {unexpected or 'none'})",
     )
     check(
-        len(actual_paths) == 11,
-        f"openapi.json declares exactly 11 paths total: 8 canonical + 3 "
-        f"dashboard-support (found {len(actual_paths)})",
+        len(actual_paths) == 18,
+        f"openapi.json declares exactly 18 paths total: 8 canonical + 3 "
+        f"dashboard-support + 7 console-support (found {len(actual_paths)})",
     )
 
     return report()
