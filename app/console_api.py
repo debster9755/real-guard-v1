@@ -210,7 +210,6 @@ def register_console_api_routes(app: FastAPI) -> None:
     would swallow every `/console/api/*` path and answer it with a static-file
     404 instead of reaching the handlers below.
     """
-    settings_path_note = CONSOLE_COOKIE_PATH  # bound once; used in logout below
 
     @app.post("/console/api/login")
     async def console_login(request: Request) -> JSONResponse:
@@ -263,7 +262,7 @@ def register_console_api_routes(app: FastAPI) -> None:
         response = JSONResponse(status_code=200, content={"ok": True})
         response.delete_cookie(
             CONSOLE_SESSION_COOKIE_NAME,
-            path=settings_path_note,
+            path=CONSOLE_COOKIE_PATH,
             httponly=True,
             secure=state.settings.APP_ENV.value == "production",
             samesite="strict",
@@ -308,13 +307,19 @@ def register_console_api_routes(app: FastAPI) -> None:
             return _error("Not authenticated.", ErrorCode.INVALID_AUTHENTICATION, 401)
 
         requested = [s.upper() for s in request.query_params.getlist("status") if s]
-        statuses: list[str] | None = [s for s in requested if s in APPROVAL_STATES] or None
-        if requested and statuses is None:
+        # Reject if *any* value is unknown, rather than silently dropping the
+        # bad ones and answering with a narrower filter than was asked for —
+        # a caller who mistypes one state in a list would otherwise get a
+        # plausible-looking partial result and no indication of the typo.
+        unknown = [s for s in requested if s not in APPROVAL_STATES]
+        if unknown:
             return _error(
-                f"`status` must be one of {', '.join(APPROVAL_STATES)}.",
+                f"Unknown `status` value(s) {', '.join(sorted(set(unknown)))} — "
+                f"must be one of {', '.join(APPROVAL_STATES)}.",
                 ErrorCode.INVALID_REQUEST,
                 400,
             )
+        statuses: list[str] | None = requested or None
 
         try:
             limit = max(1, min(int(request.query_params.get("limit", "100")), 200))

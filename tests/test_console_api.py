@@ -252,6 +252,28 @@ class TestConsoleReads:
         assert response.status_code == 400
         assert response.json()["code"] == "INVALID_REQUEST"
 
+    def test_a_partially_valid_status_list_is_rejected_whole(
+        self, console_client: TestClient
+    ) -> None:
+        """A mixed list must not quietly degrade to the valid subset: a
+        caller who mistypes one state would otherwise get a plausible-looking
+        partial result with no indication of the typo."""
+        _login(console_client, REVIEWER_KEY)
+        response = console_client.get(
+            "/console/api/approvals?status=PENDING&status=NONSENSE"
+        )
+        assert response.status_code == 400
+        assert "NONSENSE" in response.json()["error"]
+
+    def test_multiple_valid_statuses_are_accepted(self, console_client: TestClient) -> None:
+        approval_id, _ = _seed_pending_approval(console_client)
+        _login(console_client, REVIEWER_KEY)
+        response = console_client.get(
+            "/console/api/approvals?status=PENDING&status=COMPLETED"
+        )
+        assert response.status_code == 200
+        assert approval_id in {i["approval_id"] for i in response.json()["items"]}
+
 
 # ---------------------------------------------------------------------------
 # Decide (SEC-005, SEC-007, APR-008/009/010)
