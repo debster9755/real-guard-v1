@@ -22,6 +22,17 @@ coverage.xml
 *.db-shm
 *.db-wal
 
+# Node / /console SPA build artefacts (ADR 0014). Also covered by
+# web/.gitignore; repeated here so a `git status` from the repository root
+# is clean even if that file is ever removed. node_modules is never
+# committed — the Dockerfile's web-builder stage runs `npm ci` from the
+# committed web/package-lock.json instead.
+web/node_modules/
+web/.next/
+web/out/
+web/next-env.d.ts
+*.tsbuildinfo
+
 # OS
 .DS_Store
 

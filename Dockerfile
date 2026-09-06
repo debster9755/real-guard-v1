@@ -14,6 +14,14 @@
 
 ARG PYTHON_DIGEST=sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
+# ADR 0014 §3: the `/console` SPA is built here, at image-build time, and
+# ships as static files — there is no Node runtime in the final image.
+# Obtained exactly the way PYTHON_DIGEST was (ADR 0007), on 2026-09-06:
+#   docker pull node:22-slim
+#   docker inspect --format='{{index .RepoDigests 0}}' node:22-slim
+# Refresh it deliberately with those two commands, never by floating the tag.
+ARG NODE_DIGEST=sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+
 FROM python:3.12-slim@${PYTHON_DIGEST} AS builder
 
 WORKDIR /build
@@ -32,6 +40,32 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir .
 
+# --- /console SPA (ADR 0014 §3) -------------------------------------------
+# `npm ci` runs *inside* this stage against the committed package-lock.json —
+# a host `web/node_modules` is never copied in (it is excluded by
+# .dockerignore, which matters: a macOS-built node_modules containing
+# platform-specific binaries would otherwise be baked into a Linux image).
+# The lockfile is copied on its own first so the dependency layer is cached
+# and only re-resolved when the lockfile itself changes, mirroring how the
+# Python builder above copies pyproject.toml before the source tree.
+FROM node:22-slim@${NODE_DIGEST} AS web-builder
+
+WORKDIR /web
+ENV NEXT_TELEMETRY_DISABLED=1
+
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web/ ./
+# -> /web/out, via next.config.ts's output:'export', followed by
+# scripts/externalize-inline.mjs, which rewrites Next's inline bootstrap
+# <script> blocks into real files so the exported HTML satisfies SEC-008's
+# `default-src 'self'` CSP with no `unsafe-inline`. That script exits
+# non-zero if any inline block survives, so a future Next upgrade that
+# emits an unrecognised one fails the build here rather than shipping a
+# page the browser will refuse to run.
+RUN npm run build
+
 FROM python:3.12-slim@${PYTHON_DIGEST} AS runtime
 
 # DEP-006: non-root, fixed UID/GID (no dependency on a base image's own
@@ -47,6 +81,11 @@ ENV PATH="/opt/venv/bin:${PATH}" \
 COPY --from=builder /opt/venv /opt/venv
 COPY app ./app
 COPY policies ./policies
+
+# ADR 0014 §3: the built SPA, mounted at /console by app/console_api.py
+# (which looks here first, then falls back to a source checkout's web/out).
+# Static assets only — no Node, no npm, no node_modules in this stage.
+COPY --from=web-builder /web/out ./app/console_static
 
 # WS-17 (Phase 6, ADR 0008): a real Trivy scan of this image found two HIGH
 # findings (GHSA-6v7p-g79w-8964, CVE-2025-47273) that trace to *pip itself*

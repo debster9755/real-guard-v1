@@ -21,6 +21,34 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      # ADR 0014: the /console SPA. Deliberately a step inside THIS job
+      # rather than a new job of its own — branch protection requires the
+      # exact context names "lint, type-check, test" and "security
+      # (pip-audit, Trivy, gitleaks)", and adding a third job would create a
+      # check that is reported but not required, i.e. a frontend break could
+      # merge. Kept here, a TypeScript or build failure fails the same
+      # already-required check a `mypy --strict` break does.
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Frontend type-check and build (/console SPA)
+        # `npm ci` (not `npm install`) so the committed lockfile is
+        # authoritative, exactly as the Dockerfile's web-builder stage does.
+        # `npm run build` runs `next build` — which type-checks — followed by
+        # scripts/externalize-inline.mjs, which fails the build if any inline
+        # <script>/<style> survives into the exported HTML (SEC-008's CSP has
+        # no `unsafe-inline`). `npm run lint` is `tsc --noEmit`, run first so
+        # a type error reports as a type error rather than as a build error.
+        working-directory: web
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
       - name: Ruff (lint)
         run: ruff check .
 
@@ -59,6 +87,14 @@ jobs:
         # placeholder grep (DOC-012, now covering every published Markdown
         # file), and the numeric-claim trace (DOC-010) all run as part of
         # this one step.
+        #
+        # ADR 0014 adds two more files, collected here automatically with no
+        # workflow change beyond this comment: tests/test_console_api.py
+        # (plain TestClient, no browser and no Node — runs for real here),
+        # and tests/test_console_browser.py (the `browser` marker), which
+        # self-skips on this runner because `playwright install chromium`
+        # is not run in CI — the same skip-clean contract
+        # tests/test_dashboard_browser.py has had since ADR 0012.
         run: pytest --cov=app --cov-report=term-missing --cov-report=xml -q
 
       - name: "Coverage gate (PLAN.md §10.2 G14: >= 85% line, >= 75% branch)"
