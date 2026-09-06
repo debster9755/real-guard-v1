@@ -11,7 +11,7 @@ jobs:
     name: lint, type-check, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -85,7 +85,7 @@ jobs:
     name: security (pip-audit, Trivy, gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # gitleaks scans commit history, not just the working tree — a
           # shallow checkout would only see the most recent commit.
