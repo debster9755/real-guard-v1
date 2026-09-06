@@ -34,7 +34,7 @@ dev = [
     "mypy>=1.13,<2.0",
     "types-PyYAML",
     "types-jsonschema",
-    "playwright==1.55.0",  # Phase 9 gap-closure (ADR 0012): real headless-Chromium
+    "playwright==1.62.0",  # Phase 9 gap-closure (ADR 0012): real headless-Chromium
     # verification of the reviewer dashboard — CSP enforcement, HTMX DOM swaps,
     # real screenshots. Requires a one-time `playwright install chromium` (and,
     # on Linux, `playwright install-deps chromium`) after `pip install -e .[dev]`;
